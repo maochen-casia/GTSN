@@ -1,4 +1,4 @@
-# Proposed project structure
+# Implemented project structure
 
 ```text
 GTSN/
@@ -35,8 +35,7 @@ GTSN/
 │       ├── train.py                # python -m tsn.cli.train
 │       └── evaluate.py             # python -m tsn.cli.evaluate
 ├── scripts/
-│   ├── train_docker.sh
-│   └── evaluate_docker.sh
+│   └── docker_run.py              # Readable Docker launcher for both commands
 ├── documents/
 │   └── file_structure.md
 ├── Dockerfile
@@ -45,3 +44,18 @@ GTSN/
 ```
 
 Keep the benchmark at `/run/user/1016/tsn-1k`. Generate and save the fixed split with each run; preserve the 2:4:4 route ratio in the 800/100/100 train, validation, and test partitions. Store checkpoints, logs, split records, and evaluation outputs in an external run directory mounted into Docker, not in the source tree.
+
+The package is independently implemented and has no imports from `tsn_old`.
+The Docker build context excludes that reference directory. Python replaces the
+two proposed shell launchers; see `scripts/docker_run.py` and `documents/baseline.md`.
+
+`data/hdf5_dataset.py` validates the current schema and joint ordering, reads frame
+samples through a process-local bounded HDF5 cache, and supplies a mask for future
+states beyond the demonstration endpoint. `features/maps.py` generates all maps
+online on the policy device using each sample's camera calibration. Training and
+evaluation share the policy factory and robot/goal normalization.
+
+Checkpoints contain the complete model configuration and fixed episode split.
+Evaluation validates this split against the current manifest and admits only its
+test episodes. Validation RMSE selects `best.pt`; test data never enters training
+or checkpoint selection.

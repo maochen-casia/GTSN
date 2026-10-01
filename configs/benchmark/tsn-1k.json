@@ -1,0 +1,10 @@
+{
+  "root": "/run/user/1016/tsn-1k",
+  "seed": 20261001,
+  "route_counts": {"direct": 200, "over": 400, "side": 400},
+  "partitions": {
+    "train": {"direct": 160, "over": 320, "side": 320},
+    "validation": {"direct": 20, "over": 40, "side": 40},
+    "test": {"direct": 20, "over": 40, "side": 40}
+  }
+}

@@ -8,5 +8,65 @@ The benchmark has been saved in `/run/user/1016/tsn-1k`, with 1,000 episodes, in
 
 There's one baseline model to work as a model prototype. The previous version is in `tsn_old`. Please read it carefully. This previous version is only for reference, as it is used to conduct experiment on another benchmark. You cannot directly use any codes or scripts from it. Instead, you should re-implement the model part while allowing it to run in current benchmark.
 
+## Project Structure
+```text
+GTSN/
+├── configs/
+│   ├── benchmark/tsn-1k.json       # Dataset location and fixed 800/100/100 split settings
+│   ├── model/geometry_policy.json  # Architecture and input/output dimensions
+│   ├── train/baseline.json         # Optimizer, schedule, and training options
+│   └── eval/closed_loop.json       # Test episodes, control, and rendering options
+├── src/tsn/
+│   ├── data/
+│   │   ├── splits.py               # Reproducible direct/over/side stratification
+│   │   ├── hdf5_dataset.py         # Episode and frame sample access
+│   │   └── loaders.py              # Train/validation/test DataLoaders
+│   ├── features/
+│   │   ├── maps.py                 # Online GPU point, goal, and action maps
+│   │   └── state.py                # Shared robot/goal state preparation
+│   ├── models/
+│   │   ├── geometry_policy.py      # Policy network
+│   │   └── factory.py              # One model constructor for train and evaluation
+│   ├── training/
+│   │   ├── runner.py               # Epoch loop, validation, and checkpoint selection
+│   │   └── losses.py
+│   ├── evaluation/
+│   │   ├── open_loop.py            # Prediction metrics
+│   │   ├── closed_loop.py          # Test rollout orchestration
+│   │   └── metrics.py              # Success, collision, and summary metrics
+│   ├── simulation/
+│   │   └── episode.py              # Scene setup, stepping, contacts, and rendering
+│   ├── common/
+│   │   ├── config.py
+│   │   ├── checkpoint.py
+│   │   └── seed.py
+│   └── cli/
+│       ├── train.py                # python -m tsn.cli.train
+│       └── evaluate.py             # python -m tsn.cli.evaluate
+├── scripts/
+│   ├── train_docker.sh
+│   └── evaluate_docker.sh
+├── documents/
+│   └── file_structure.md
+├── Dockerfile
+├── pyproject.toml
+└── tsn_old/                        # Reference only; never imported by the new package
+```
+
+The experiment log, result, checkpoint, should be saved in `/run/user/1016/experiments`.
+
+## Readability
+It is important to improve code readability. For example:
+1) Write notes for complicated method or class
+2) Write doc string for methods, showing the input and output meaning, shapes, etc.
+3) Try to use python script instead of .sh script to improve readability
+
+## Training and testing environment
+
+Prepare the environment in docker. You may build a docker image based on tablescenenav:demo, if it can be reused, or build a new minimal one if not. Don’t change or edit any existing dockers.
+
+## Task
+You only need to finish the code implementation, and docker file writing (without building), indicating the needed packages. No need to run a smoke test, or full training, testing process, and docker building process.
+
 ## Importante Notes
-You cannot directly install environment or packages in user environment. Instead, prepare the needed environment in Docker, and use Docker to run process. You can directly edit codes or scripts in user environment, and read files. If any actions require installing new packages, do it in docker. Keep the user environment clean. For training and testing, you may build a docker image based on tablescenenav:demo, if it can be used, or build a new minimal one. Don’t change or edit any existing dockers. You can only work on /home/chenmao/TableSceneNav/ (for codes and scripts) and /run/user/1016/ (for data storage). You cannot edit or save anything outside this directory.
+You cannot directly install environment or packages in user environment. Instead, prepare the needed environment in Docker, and use Docker to run process. You can directly edit codes or scripts in user environment, and read files. If any actions require installing new packages, do it in docker. Keep the user environment clean.  You can only work on /home/chenmao/GTSN/ (for codes and scripts) and /run/user/1016/ (for data storage). You cannot edit or save anything outside these two directories.
