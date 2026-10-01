@@ -1,0 +1,21 @@
+{
+  "experiment_root": "/run/user/1016/experiments",
+  "run_name": "geometry_baseline_recovery10",
+  "seed": 20261001,
+  "epochs": 10,
+  "batch_size": 64,
+  "num_workers": 8,
+  "frame_stride": 2,
+  "max_open_files": 8,
+  "learning_rate": 0.0001,
+  "weight_decay": 0.0001,
+  "huber_beta_rad": 0.02,
+  "gradient_clip_norm": 1.0,
+  "horizon_decay_steps": 10.0,
+  "horizon_weight_floor": 0.25,
+  "mixed_precision": true,
+  "device": "cuda",
+  "initialize_from_checkpoint": "/run/user/1016/experiments/geometry_baseline_gpu_20261001/best.pt",
+  "recovery_data_dir": "/run/user/1016/experiments/recovery_data_geometry_baseline_gpu_20261001/recovery_data",
+  "recovery_sampling_fraction": 0.35
+}

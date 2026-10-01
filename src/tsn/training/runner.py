@@ -12,11 +12,12 @@ from typing import Any
 
 import torch
 
-from tsn.common.checkpoint import save_checkpoint
+from tsn.common.checkpoint import load_checkpoint, save_checkpoint
 from tsn.common.config import experiment_path, write_json
 from tsn.common.seed import require_device, seed_everything
 from tsn.data.hdf5_dataset import FrameDataset
-from tsn.data.loaders import make_loader
+from tsn.data.loaders import make_loader, make_recovery_loader
+from tsn.data.recovery_dataset import RecoveryDataset
 from tsn.data.splits import episode_catalog, make_splits
 from tsn.evaluation.metrics import PredictionMetrics
 from tsn.evaluation.open_loop import device_batch, evaluate_predictions, predict_batch
@@ -59,15 +60,50 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
         "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU",
     })
     datasets: dict[str, FrameDataset] = {}
+    recovery_dataset: RecoveryDataset | None = None
     try:
         for partition in ("train", "validation"):
             datasets[partition] = FrameDataset(
                 Path(benchmark["root"]), split[partition], catalog, int(model_config["chunk_size"]),
                 int(options["frame_stride"]), int(options["max_open_files"]),
             )
-        train_loader = make_loader(datasets["train"], options, True, int(options["seed"]))
+        recovery_dir = options.get("recovery_data_dir")
+        if recovery_dir:
+            recovery_root = Path(recovery_dir)
+            recovery_dataset = RecoveryDataset(recovery_root, int(model_config["chunk_size"]))
+            manifest_path = recovery_root / "manifest.json"
+            if not manifest_path.is_file():
+                raise FileNotFoundError(f"Missing recovery manifest: {manifest_path}")
+            recovery_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if recovery_manifest.get("source_partition") != "train":
+                raise ValueError("Recovery data must be generated from the training partition")
+            recovery_ids = set(recovery_dataset.route_by_episode)
+            manifest_ids = set(recovery_manifest.get("episode_ids", []))
+            if recovery_manifest.get("source_dataset") != str(Path(benchmark["root"])):
+                raise ValueError("Recovery data was generated from a different benchmark root")
+            if manifest_ids != set(split["train"]) or recovery_ids != manifest_ids:
+                raise ValueError("Recovery data must include exactly the current training episodes")
+            train_loader = make_recovery_loader(
+                datasets["train"], recovery_dataset, options, int(options["seed"]),
+                float(options["recovery_sampling_fraction"]),
+                {route: int(count) / sum(benchmark["route_counts"].values())
+                 for route, count in benchmark["route_counts"].items()},
+            )
+        else:
+            recovery_manifest = None
+            train_loader = make_loader(datasets["train"], options, True, int(options["seed"]))
         validation_loader = make_loader(datasets["validation"], options, False, int(options["seed"]) + 1)
         model = make_policy(model_config).to(device)
+        initialize_from = options.get("initialize_from_checkpoint")
+        if initialize_from:
+            initialization = load_checkpoint(Path(initialize_from))
+            if initialization["config"]["model"] != model_config:
+                raise ValueError("Initialization checkpoint uses a different model configuration")
+            if initialization["splits"] != split:
+                raise ValueError("Initialization checkpoint uses a different data split")
+            model.load_state_dict(initialization["model"], strict=True)
+        else:
+            initialize_from = None
         maps = make_maps(model_config).to(device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=float(options["learning_rate"]),
                                       weight_decay=float(options["weight_decay"]))
@@ -78,6 +114,10 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
         best_epoch = 0
         logger.info("Run %s: %d training frames, %d validation frames; expert future action maps",
                     output.name, len(datasets["train"]), len(datasets["validation"]))
+        if recovery_dataset is not None:
+            logger.info("Recovery fine-tuning: %d samples (%.1f%% of sampled frames), initialized from %s",
+                        len(recovery_dataset), 100 * float(options["recovery_sampling_fraction"]),
+                        initialize_from)
         for epoch in range(1, int(options["epochs"]) + 1):
             started = time.perf_counter()
             model.train()
@@ -121,6 +161,8 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
                 "model": model.state_dict(), "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(),
                 "validation": validation, "best_rmse_rad": best_rmse, "best_epoch": best_epoch,
+                "initialize_from_checkpoint": str(initialize_from) if initialize_from else None,
+                "recovery_data_dir": str(options["recovery_data_dir"]) if recovery_dataset else None,
             }
             save_checkpoint(output / "latest.pt", payload)
             if improved:
@@ -128,6 +170,9 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
             write_json(output / "summary.json", {
                 "completed_epochs": epoch, "best_epoch": best_epoch, "best_validation_rmse_rad": best_rmse,
                 "best_checkpoint": str(output / "best.pt"), "privileged_action_map": True,
+                "initialize_from_checkpoint": str(initialize_from) if initialize_from else None,
+                "recovery_train_samples": len(recovery_dataset) if recovery_dataset else 0,
+                "recovery_sampling_fraction": float(options.get("recovery_sampling_fraction", 0.0)),
             })
             logger.info("Epoch %d/%d train loss %.6f validation RMSE %.6f rad (best epoch %d)",
                         epoch, options["epochs"], total_loss / samples, validation["rmse_rad"], best_epoch)
@@ -135,7 +180,8 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
     finally:
         for dataset in datasets.values():
             dataset.close()
+        if recovery_dataset is not None:
+            recovery_dataset.close()
         for handler in (stream, file_log):
             logger.removeHandler(handler)
             handler.close()
-

@@ -6,7 +6,7 @@ The benchmark has been saved in `/run/user/1016/tsn-1k`, with 1,000 episodes, in
 
 ## Baseline
 
-There's one baseline model to work as a model prototype. The previous version is in `tsn_old`. Please read it carefully. This previous version is only for reference, as it is used to conduct experiment on another benchmark. You cannot directly use any codes or scripts from it. Instead, you should re-implement the model part while allowing it to run in current benchmark.
+There's one baseline model to work as a model prototype. The previous version is in `tsn_old`. Please read it carefully. This previous version is only for reference, as it is used to conduct experiment on another benchmark. The new baseline code has been implemented in this project.
 
 ## Project Structure
 ```text
@@ -55,18 +55,8 @@ GTSN/
 
 The experiment log, result, checkpoint, should be saved in `/run/user/1016/experiments`.
 
-## Readability
-It is important to improve code readability. For example:
-1) Write notes for complicated method or class
-2) Write doc string for methods, showing the input and output meaning, shapes, etc.
-3) Try to use python script instead of .sh script to improve readability
-
-## Training and testing environment
-
-Prepare the environment in docker. You may build a docker image based on tablescenenav:demo, if it can be reused, or build a new minimal one if not. Don’t change or edit any existing dockers.
-
 ## Task
-You only need to finish the code implementation, and docker file writing (without building), indicating the needed packages. No need to run a smoke test, or full training, testing process, and docker building process.
+The first stage of training and closed-loop testing has been finished, in `/run/user/1016/experiments/geometry_baseline_gpu_20261001/`. Now please try to introduce recovery data, as in `tsn_old`, and then see if performance can be improved. Only train model for 10 epochs. 
 
 ## Importante Notes
 You cannot directly install environment or packages in user environment. Instead, prepare the needed environment in Docker, and use Docker to run process. You can directly edit codes or scripts in user environment, and read files. If any actions require installing new packages, do it in docker. Keep the user environment clean.  You can only work on /home/chenmao/GTSN/ (for codes and scripts) and /run/user/1016/ (for data storage). You cannot edit or save anything outside these two directories.
