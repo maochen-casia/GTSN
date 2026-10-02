@@ -22,7 +22,8 @@ from tsn.data.splits import episode_catalog, make_splits
 from tsn.evaluation.metrics import PredictionMetrics
 from tsn.evaluation.open_loop import device_batch, evaluate_predictions, predict_batch
 from tsn.models.factory import make_maps, make_policy
-from tsn.training.losses import imitation_loss
+from tsn.training.losses import imitation_loss, predicted_map_loss
+from tsn.features.state import policy_state
 
 
 def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict[str, Any],
@@ -38,6 +39,7 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
     if float(options["gradient_clip_norm"]) <= 0 or float(options["weight_decay"]) < 0:
         raise ValueError("Invalid gradient clip or weight decay")
     device = require_device(options["device"])
+    learned_maps = model_config['name'] == 'pi3_map_policy'
     seed_everything(int(options["seed"]))
     split = make_splits(benchmark)
     catalog = episode_catalog(Path(benchmark["root"]))
@@ -55,7 +57,8 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
     write_json(output / "splits.json", split)
     write_json(output / "environment.json", {
         "packages": {name: importlib.metadata.version(name) for name in (
-            "torch", "numpy", "h5py", "sapien", "mani-skill", "trimesh", "pyrender", "PyOpenGL")},
+            "torch", "numpy", "h5py", "sapien", "mani-skill", "trimesh", "pyrender", "PyOpenGL",
+            *(['huggingface-hub', 'safetensors'] if learned_maps else []))},
         "device": str(device), "cuda_runtime": torch.version.cuda,
         "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU",
     })
@@ -66,6 +69,7 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
             datasets[partition] = FrameDataset(
                 Path(benchmark["root"]), split[partition], catalog, int(model_config["chunk_size"]),
                 int(options["frame_stride"]), int(options["max_open_files"]),
+                include_rgb=learned_maps,
             )
         recovery_sources = options.get("recovery_sources")
         if recovery_sources is None:
@@ -86,7 +90,7 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
             if recovery_root in seen_recovery_dirs:
                 raise ValueError(f"Recovery source is listed more than once: {recovery_root}")
             seen_recovery_dirs.add(recovery_root)
-            recovery = RecoveryDataset(recovery_root, int(model_config["chunk_size"]))
+            recovery = RecoveryDataset(recovery_root, int(model_config["chunk_size"]), include_rgb=learned_maps)
             recovery_datasets.append(recovery)
             manifest_path = recovery_root / "manifest.json"
             if not manifest_path.is_file():
@@ -121,6 +125,17 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
             train_loader = make_loader(datasets["train"], options, True, int(options["seed"]))
         validation_loader = make_loader(datasets["validation"], options, False, int(options["seed"]) + 1)
         model = make_policy(model_config).to(device)
+        if learned_maps:
+            if options.get('initialize_from_checkpoint'):
+                raise ValueError('The fresh Pi3 experiment must not initialize from a policy checkpoint')
+            if not all(parameter.requires_grad for parameter in model.parameters()):
+                raise ValueError('Pi3 experiment requires full fine-tuning')
+            write_json(output / 'initialization.json', {
+                **model.initialization, 'all_parameters_trainable': True,
+                'total_parameters': sum(p.numel() for p in model.parameters()),
+                'backbone_parameters': sum(p.numel() for p in model.encoder.parameters()),
+                'policy_checkpoint': None,
+            })
         initialize_from = options.get("initialize_from_checkpoint")
         if initialize_from:
             initialization = load_checkpoint(Path(initialize_from))
@@ -137,11 +152,25 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
         else:
             initialize_from = None
         maps = make_maps(model_config).to(device)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=float(options["learning_rate"]),
+        training_model = model
+        if learned_maps and len(options.get('gpu_ids', [])) > 1:
+            if device.type != 'cuda' or options['gpu_ids'][0] != (device.index or 0):
+                raise ValueError('DataParallel primary GPU must match the policy device')
+            training_model = torch.nn.DataParallel(model, device_ids=options['gpu_ids'])
+        parameters = model.parameters()
+        if learned_maps:
+            encoder_ids = {id(p) for p in model.encoder.parameters()}
+            parameters = [
+                {'params': list(model.encoder.parameters()), 'lr': float(options['backbone_learning_rate']),
+                 'name': 'pi3_image_encoder'},
+                {'params': [p for p in model.parameters() if id(p) not in encoder_ids],
+                 'lr': float(options['learning_rate']), 'name': 'decoder_and_heads'},
+            ]
+        optimizer = torch.optim.AdamW(parameters, lr=float(options["learning_rate"]),
                                       weight_decay=float(options["weight_decay"]))
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(options["epochs"]))
         amp = bool(options["mixed_precision"]) and device.type == "cuda"
-        scaler = torch.amp.GradScaler("cuda", enabled=amp)
+        scaler = torch.amp.GradScaler("cuda", enabled=amp and not learned_maps)
         best_rmse = math.inf
         best_epoch = 0
         selection = options.get("checkpoint_selection", {"method": "expert_rmse"})
@@ -188,10 +217,11 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
             save_checkpoint(output / "best.pt", parent_payload)
             write_json(output / "parent_validation.json", parent_validation)
             logger.info("Parent candidate validation RMSE %.6f rad", best_rmse)
-        logger.info("Run %s: %d training frames, %d validation frames; expert future action maps",
-                    output.name, len(datasets["train"]), len(datasets["validation"]))
+        logger.info("Run %s: %d training frames, %d validation frames; %s maps",
+                    output.name, len(datasets["train"]), len(datasets["validation"]),
+                    'Pi3 predicted' if learned_maps else 'expert future action')
         if recovery_datasets:
-            logger.info("Recovery fine-tuning initialized from %s", initialize_from)
+            logger.info("Recovery training policy initialization checkpoint: %s", initialize_from)
             for source in resolved_sources:
                 logger.info("  %s: %d samples, %.1f%% of sampled frames",
                             source.get("name", Path(source["path"]).name), source["samples"],
@@ -201,16 +231,30 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
             model.train()
             metrics = PredictionMetrics(model.chunk_size)
             total_loss, samples = 0.0, 0
+            map_loss_sum = point_loss_sum = heatmap_loss_sum = 0.0
             learning_rate = optimizer.param_groups[0]["lr"]
+            learning_rates = {group.get('name', 'policy'): group['lr'] for group in optimizer.param_groups}
             for step, raw in enumerate(train_loader, start=1):
                 batch = device_batch(raw, device)
                 optimizer.zero_grad(set_to_none=True)
-                with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp):
-                    prediction = predict_batch(model, maps, batch)
+                with torch.autocast(device_type=device.type,
+                                    dtype=torch.bfloat16 if learned_maps else torch.float16, enabled=amp):
+                    if learned_maps:
+                        with torch.autocast(device_type=device.type, enabled=False):
+                            state = policy_state(batch['qpos'], batch['goal_pose'], maps.settings)
+                            teacher = maps(batch['depth'], batch['K'], batch['T_B_C'],
+                                           batch['goal_pose'][:, :3], batch['future_ee'], batch['valid_future'])
+                        prediction, predicted_maps = training_model(batch['rgb'], state,
+                            batch['K'], batch['T_B_C'], return_maps=True)
+                    else:
+                        prediction = predict_batch(model, maps, batch)
                     loss = imitation_loss(
                         prediction, batch["target"], batch["valid_future"], float(options["huber_beta_rad"]),
                         float(options["horizon_decay_steps"]), float(options["horizon_weight_floor"]),
                     )
+                    if learned_maps:
+                        map_loss, components = predicted_map_loss(predicted_maps, teacher)
+                        loss = loss + float(options['map_loss_weight']) * map_loss
                 if not torch.isfinite(loss):
                     raise FloatingPointError(f"Non-finite training loss at epoch {epoch}, batch {step}")
                 scaler.scale(loss).backward()
@@ -219,6 +263,10 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
                 scaler.step(optimizer)
                 scaler.update()
                 size = len(batch["target"])
+                if learned_maps:
+                    map_loss_sum += float(map_loss.detach()) * size
+                    point_loss_sum += float(components['point']) * size
+                    heatmap_loss_sum += float(components['heatmap']) * size
                 total_loss += float(loss.detach()) * size
                 samples += size
                 metrics.update(prediction.detach(), batch["target"], batch["valid_future"], batch["route"])
@@ -244,6 +292,10 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
             record = {"epoch": epoch, "learning_rate": learning_rate, "train_loss": total_loss / samples,
                       "train": metrics.result(), "validation": validation,
                       "elapsed_seconds": time.perf_counter() - started, "best_epoch": best_epoch}
+            if learned_maps:
+                record['map_loss'] = {'total': map_loss_sum / samples, 'point': point_loss_sum / samples,
+                                      'heatmap': heatmap_loss_sum / samples}
+                record['learning_rates'] = learning_rates
             with (output / "epochs.jsonl").open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, allow_nan=False) + "\n")
             payload = {
@@ -260,7 +312,7 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
                 save_checkpoint(output / "best.pt", payload)
             write_json(output / "summary.json", {
                 "completed_epochs": epoch, "best_epoch": best_epoch, "best_validation_rmse_rad": best_rmse,
-                "best_checkpoint": str(output / "best.pt"), "privileged_action_map": True,
+                "best_checkpoint": str(output / "best.pt"), "privileged_action_map": not learned_maps,
                 "initialize_from_checkpoint": str(initialize_from) if initialize_from else None,
                 "recovery_train_samples": sum(source["samples"] for source in resolved_sources),
                 "recovery_sources": resolved_sources,

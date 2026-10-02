@@ -17,9 +17,10 @@ from tsn.data.splits import ROUTES
 class RecoveryDataset(Dataset):
     """Recovery samples parallel FrameDataset's batch schema."""
 
-    def __init__(self, root: Path, chunk_size: int) -> None:
+    def __init__(self, root: Path, chunk_size: int, include_rgb: bool = False) -> None:
         self.root = root
         self.chunk_size = int(chunk_size)
+        self.include_rgb = include_rgb
         self.paths = sorted(root.glob("episode_*.npz"))
         if not self.paths:
             raise FileNotFoundError(f"No recovery archives found in {root}")
@@ -32,6 +33,9 @@ class RecoveryDataset(Dataset):
                 route = str(data["route"])
                 episode = str(data["episode_id"])
                 count = len(data["depth"])
+                if include_rgb and ('rgb' not in data or data['rgb'].shape != (*data['depth'].shape, 3)
+                                    or data['rgb'].dtype != np.uint8):
+                    raise ValueError(f'{path}: missing or invalid recovery RGB observations')
                 if route not in ROUTES or count == 0:
                     raise ValueError(f"Invalid recovery archive: {path}")
                 expected = {
@@ -85,7 +89,7 @@ class RecoveryDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, Any]:
         file_index, sample_index = self.samples[index]
         data = self._file(file_index)
-        return {
+        sample = {
             "depth": torch.from_numpy(data["depth"][sample_index].astype(np.float32)),
             "T_B_C": torch.from_numpy(data["T_B_C"][sample_index].astype(np.float32)),
             "K": torch.from_numpy(data["K"][sample_index].astype(np.float32)),
@@ -98,6 +102,9 @@ class RecoveryDataset(Dataset):
             "episode_id": self.episode_ids[index] + "_recovery",
             "frame_index": int(data["frame_index"][sample_index]),
         }
+        if self.include_rgb:
+            sample['rgb'] = torch.from_numpy(data['rgb'][sample_index].copy())
+        return sample
 
     def close(self) -> None:
         for value in self._files.values():

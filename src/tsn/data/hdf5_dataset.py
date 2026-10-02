@@ -70,11 +70,12 @@ class FrameDataset(Dataset):
     """
 
     def __init__(self, root: Path, ids: list[str], catalog: dict[str, str], chunk_size: int,
-                 frame_stride: int = 1, max_open_files: int = 8) -> None:
+                 frame_stride: int = 1, max_open_files: int = 8, include_rgb: bool = False) -> None:
         if min(chunk_size, frame_stride, max_open_files) <= 0 or not ids:
             raise ValueError("A nonempty split and positive horizon/stride/cache are required")
         self.root, self.ids, self.catalog = root, list(ids), catalog
         self.chunk_size, self.stride, self.max_open = chunk_size, frame_stride, max_open_files
+        self.include_rgb = include_rgb
         self.counts: list[int] = []
         self.offsets = [0]
         for episode in ids:
@@ -119,11 +120,14 @@ class FrameDataset(Dataset):
             "goal_pose": handle["goal_pose_xyz_wxyz"][:],
             "future_ee": future_ee, "target": future_q - q[0, :7],
         }
-        return {
+        sample = {
             **{key: torch.from_numpy(np.asarray(value, dtype=np.float32)) for key, value in arrays.items()},
             "valid_future": torch.from_numpy(mask), "episode_id": episode,
             "frame_index": frame, "route": ROUTES.index(self.catalog[episode]),
         }
+        if self.include_rgb:
+            sample['rgb'] = torch.from_numpy(np.asarray(handle['rgb'][frame], dtype=np.uint8))
+        return sample
 
     def close(self) -> None:
         for handle in self._handles.values():

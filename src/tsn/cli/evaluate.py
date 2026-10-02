@@ -41,7 +41,7 @@ def main() -> None:
     ids = args.episode or split["test"]
     if len(ids) != len(set(ids)) or set(ids) - set(split["test"]):
         raise ValueError("Evaluation episodes must be unique members of the checkpoint's test split")
-    model = make_policy(configuration["model"]).to(device)
+    model = make_policy(configuration["model"], initialize_backbone=False).to(device)
     model.load_state_dict(checkpoint["model"], strict=True)
     model.eval()
     maps = make_maps(configuration["model"]).to(device)
@@ -53,10 +53,11 @@ def main() -> None:
                                        "dataset_root": str(root), "episodes": ids, "eval": options,
                                        "model": configuration["model"],
                                        "full_test_split": set(ids) == set(split["test"]),
-                                       "privileged_action_map": True})
+                                       "privileged_action_map": not getattr(model, 'uses_predicted_maps', False)})
     write_json(output / "splits.json", split)
     if args.mode in ("open-loop", "both"):
-        dataset = FrameDataset(root, ids, catalog, model.chunk_size, int(options["frame_stride"]))
+        dataset = FrameDataset(root, ids, catalog, model.chunk_size, int(options["frame_stride"]),
+                               include_rgb=getattr(model, 'uses_predicted_maps', False))
         try:
             loader = make_loader(dataset, options, False, int(configuration["train"]["seed"]))
             metrics = evaluate_predictions(model, maps, loader, device)
@@ -73,4 +74,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

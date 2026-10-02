@@ -1,0 +1,7 @@
+FROM gtsn-baseline:tsn-1k-gpu
+
+# Pi3 uses native PyTorch SDPA and RoPE; no CUDA extension is required.
+RUN python -m pip install huggingface-hub==0.36.0 safetensors==0.6.2
+ENV PYTHONPATH=/workspace/src:/workspace/vendor/Pi3 \
+    XFORMERS_DISABLED=1
+WORKDIR /workspace

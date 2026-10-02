@@ -1,7 +1,9 @@
 # Perturbation recovery baseline trained from scratch
 
-This experiment implements `instructions/baseline.md`: ten epochs from random
-initialization, followed by closed-loop evaluation of the reserved test set.
+This experiment implements the earlier geometry-map scratch protocol: ten epochs
+from random initialization, followed by closed-loop evaluation of the reserved
+test set. The revised Pi3 protocol is documented in
+[Pi3 small decoder perturbation recovery experiment](pi3_small_perturbation10.md).
 The run directory is
 `/run/user/1016/experiments/perturbation_scratch10_20261002`.
 

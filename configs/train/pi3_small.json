@@ -1,0 +1,42 @@
+{
+  "experiment_root": "/run/user/1016/experiments",
+  "run_name": "pi3_small_perturbation10",
+  "seed": 20261001,
+  "epochs": 10,
+  "batch_size": 128,
+  "num_workers": 8,
+  "frame_stride": 2,
+  "max_open_files": 8,
+  "learning_rate": 0.0003,
+  "weight_decay": 0.0001,
+  "huber_beta_rad": 0.02,
+  "gradient_clip_norm": 1.0,
+  "horizon_decay_steps": 10.0,
+  "horizon_weight_floor": 0.25,
+  "mixed_precision": true,
+  "device": "cuda",
+  "initialize_from_checkpoint": null,
+  "recovery_sources": [
+    {
+      "name": "safe_joint_perturbation",
+      "path": "/run/user/1016/experiments/pi3_rgb_perturbations_20261002",
+      "sampling_fraction": 0.35
+    }
+  ],
+  "route_sampling_fractions": {
+    "direct": 0.2,
+    "over": 0.4,
+    "side": 0.4
+  },
+  "checkpoint_selection": {
+    "method": "expert_rmse"
+  },
+  "backbone_learning_rate": 1e-05,
+  "map_loss_weight": 0.25,
+  "gpu_ids": [
+    0,
+    1,
+    2,
+    3
+  ]
+}

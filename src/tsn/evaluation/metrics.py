@@ -67,4 +67,4 @@ def summarize_rollouts(results: list[dict[str, Any]]) -> dict[str, Any]:
         }
     return {"overall": summarize(results), "by_route": {
         route: summarize([item for item in results if item["route"] == route]) for route in ROUTES
-    }, "privileged_action_map": True}
+    }, "privileged_action_map": any(item.get('privileged_action_map', True) for item in results)}

@@ -1,4 +1,4 @@
-"""Receding-horizon rollouts on held-out test episodes with expert action maps."""
+"""Receding-horizon rollouts with learned maps or the legacy geometry baseline."""
 
 from __future__ import annotations
 
@@ -24,11 +24,12 @@ from tsn.simulation.episode import EpisodeSimulation, orientation_error, quatern
 def rollout(episode: str, route: str, root: Path, output: Path, model: GeometryPolicy,
             maps: GeometryMaps, device: torch.device, options: dict[str, Any],
             recovery_root: Path | None = None) -> dict[str, Any]:
-    """Execute model chunks from measured states using live depth, saving metrics and trajectories.
+    """Execute model chunks from live observations, saving metrics and trajectories.
 
-    The future-action channel is privileged: a monotonic nearest-joint expert
-    index selects future TCP positions from this episode. No expert joint target
-    is executed; all controls come from predicted residuals plus measured qpos.
+    Pi3 consumes RGB and measured state only, and loads just the initial expert
+    state for simulator setup. The legacy geometry policy uses a monotonic
+    nearest-joint expert index to construct privileged future-action maps.
+    All controls come from predicted residuals plus measured qpos.
     """
     execute = int(options["execute_horizon"])
     max_steps = int(options["max_control_steps"])
@@ -40,11 +41,14 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: GeometryP
     if options["contact_impulse_threshold_ns"] < 0:
         raise ValueError("Contact impulse threshold must be nonnegative")
     directory = output / "episodes" / episode
+    learned_maps = getattr(model, 'uses_predicted_maps', False)
+    if learned_maps and recovery_root is not None:
+        raise ValueError('Pi3 experiment uses perturbation-only recovery; rollout collection is disabled')
     directory.mkdir(parents=True, exist_ok=False)
     with h5py.File(root / episode / "episode.h5", "r") as handle:
         validate_episode(handle, route)
-        expert_q = np.asarray(handle["qpos"][:], dtype=np.float32)
-        expert_ee = np.asarray(handle["ee_pose"][:], dtype=np.float32)
+        expert_q = np.asarray(handle['qpos'][:1] if learned_maps else handle['qpos'][:], dtype=np.float32)
+        expert_ee = np.asarray(handle['ee_pose'][:1] if learned_maps else handle['ee_pose'][:], dtype=np.float32)
         calibration = handle["intrinsics"][:]
         camera_extrinsic = handle["T_ee_camera_cv"][:]
         source_hw = handle["depth_m"].shape[1:]
@@ -93,12 +97,13 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: GeometryP
             reached_goal = is_goal(position_error, rotation_error)
             while steps < max_steps and not reached_goal:
                 # The expert progress index is an oracle map input, never a control target.
-                candidates = expert_q[progress:, :7]
-                nearest = np.linalg.norm(candidates - state["qpos"][None, :7], axis=1).argmin()
-                progress += int(nearest)
-                progress_history.append(progress)
-                future, valid = padded_future(expert_ee[:, :3], progress, model.chunk_size)
-                _, depth = simulation.render()
+                if not learned_maps:
+                    candidates = expert_q[progress:, :7]
+                    nearest = np.linalg.norm(candidates - state["qpos"][None, :7], axis=1).argmin()
+                    progress += int(nearest)
+                    progress_history.append(progress)
+                    future, valid = padded_future(expert_ee[:, :3], progress, model.chunk_size)
+                rgb, depth = simulation.render()
                 if recovery_root is not None:
                     future_q, recovery_valid = padded_future(
                         expert_q[:, :7], progress, model.chunk_size
@@ -117,18 +122,24 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: GeometryP
                 if device.type == "cuda":
                     torch.cuda.synchronize(device)
                 infer_start = time.perf_counter()
-                geometry = maps(
-                    torch.as_tensor(depth, device=device)[None], K,
-                    torch.as_tensor(state["T_B_C"], device=device, dtype=torch.float32)[None],
-                    goal_tensor[:, :3], torch.as_tensor(future, device=device)[None],
-                    torch.as_tensor(valid, device=device)[None],
-                )
                 normalized = policy_state(torch.as_tensor(state["qpos"], device=device)[None],
                                           goal_tensor, maps.settings)
-                chunk = model(geometry, normalized)[0].float().cpu().numpy()
+                if learned_maps:
+                    with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                                        enabled=device.type == 'cuda'):
+                        chunk = model(torch.as_tensor(rgb, device=device)[None], normalized, K,
+                            torch.as_tensor(state['T_B_C'], device=device, dtype=torch.float32)[None])
+                    chunk = chunk[0].float().cpu().numpy()
+                else:
+                    geometry = maps(torch.as_tensor(depth, device=device)[None], K,
+                        torch.as_tensor(state['T_B_C'], device=device, dtype=torch.float32)[None],
+                        goal_tensor[:, :3], torch.as_tensor(future, device=device)[None],
+                        torch.as_tensor(valid, device=device)[None])
+                    chunk = model(geometry, normalized)[0].float().cpu().numpy()
                 inference_seconds.append(time.perf_counter() - infer_start)
                 replans += 1
-                supervised_horizon = int(np.flatnonzero(~valid)[0]) if (~valid).any() else len(valid)
+                supervised_horizon = (model.chunk_size if learned_maps else
+                                      int(np.flatnonzero(~valid)[0]) if (~valid).any() else len(valid))
                 if supervised_horizon == 0:
                     raise ValueError("Cannot execute a chunk without supervised targets")
                 for action_index in range(min(execute, supervised_horizon, max_steps - steps)):
@@ -157,7 +168,7 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: GeometryP
     success = reached_goal and first_collision is None
     ee_positions = np.asarray(ee_history)[:, :3, 3]
     executed_length = float(np.linalg.norm(np.diff(ee_positions, axis=0), axis=1).sum())
-    expert_length = float(np.linalg.norm(np.diff(expert_ee[:, :3], axis=0), axis=1).sum())
+    expert_length = None if learned_maps else float(np.linalg.norm(np.diff(expert_ee[:, :3], axis=0), axis=1).sum())
     result = {
         "episode_id": episode, "route": route, "success": success,
         "goal_reached": reached_goal, "collision": first_collision,
@@ -169,10 +180,11 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: GeometryP
         "goal_success_criterion": options.get("goal_success_criterion", "xyz_orientation"),
         "xyz_orientation_success": success and rotation_error <= options["goal_orientation_tolerance_rad"],
         "executed_path_length_m": executed_length, "expert_path_length_m": expert_length,
-        "path_length_ratio": executed_length / expert_length if expert_length > 0 else None,
+        "path_length_ratio": executed_length / expert_length if expert_length and expert_length > 0 else None,
         "mean_inference_ms": 1000 * float(np.mean(inference_seconds)) if inference_seconds else None,
         "wall_seconds": time.perf_counter() - started,
-        "privileged_action_map": True, "expert_progress_method": "monotonic nearest arm qpos",
+        "privileged_action_map": not learned_maps,
+        "expert_progress_method": None if learned_maps else "monotonic nearest arm qpos",
         "scene_geometry": "tsn-1k complete room, object fittings, Panda v3 and collision envelopes",
     }
     np.savez_compressed(directory / "trajectory.npz", qpos=np.asarray(q_history),
