@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -13,7 +14,7 @@ import h5py
 import numpy as np
 
 from tsn.common.config import read_json, write_json
-from tsn.data.hdf5_dataset import validate_episode
+from tsn.data.hdf5_dataset import padded_future, validate_episode
 from tsn.data.splits import ROUTES, episode_catalog, make_splits
 from tsn.simulation.episode import EpisodeSimulation
 
@@ -27,7 +28,9 @@ def _obstacle_aabbs(scene: dict[str, Any]) -> list[tuple[str, np.ndarray]]:
     result = []
     for item in scene["objects"]:
         center = np.asarray(item["center"], dtype=np.float64)
-        half = np.asarray(item["half_size"], dtype=np.float64)
+        half = np.asarray(item["half_size"], dtype=np.float64) + 0.022
+        if item["kind"] == "mug":
+            half[:2] = np.maximum(half[:2], item["half_size"][0] * 1.98)
         yaw = float(item["yaw"])
         cosine, sine = abs(np.cos(yaw)), abs(np.sin(yaw))
         world_half = np.asarray([
@@ -41,7 +44,7 @@ def _obstacle_aabbs(scene: dict[str, Any]) -> list[tuple[str, np.ndarray]]:
 
 def _minimum_clearance(simulation: EpisodeSimulation, scene: dict[str, Any],
                        options: dict[str, Any]) -> tuple[float, str]:
-    table_top = float(options["table_center_m"][2] + options["table_half_size_m"][2])
+    table_top = float(simulation.options["table_center_m"][2] + simulation.options["table_half_size_m"][2])
     obstacles = _obstacle_aabbs(scene)
     minimum, closest = float("inf"), "none"
     for name, link in simulation.links.items():
@@ -67,13 +70,8 @@ def _set_simulation_state(simulation: EpisodeSimulation, qpos: np.ndarray) -> No
 
 
 def _pad_future(values: np.ndarray, frame: int, horizon: int) -> tuple[np.ndarray, np.ndarray]:
-    future = values[frame + 1:frame + 1 + horizon]
-    valid_count = len(future)
-    if valid_count == 0:
-        future = values[-1:]
-    if len(future) < horizon:
-        future = np.concatenate((future, np.repeat(future[-1:], horizon - len(future), axis=0)))
-    return future.astype(np.float32), np.arange(horizon) < valid_count
+    future, valid = padded_future(values, frame, horizon)
+    return future.astype(np.float32), valid
 
 
 def _generate_episode(job: dict[str, Any]) -> dict[str, Any]:
@@ -117,7 +115,6 @@ def _generate_episode(job: dict[str, Any]) -> dict[str, Any]:
                 if np.any(candidate[:7] < limits[:, 0]) or np.any(candidate[:7] > limits[:, 1]):
                     continue
                 _set_simulation_state(simulation, candidate)
-                simulation.robot.set_qf(simulation.robot.compute_passive_force(True, True))
                 # Match the reference generator: settle one physics step before checking contacts.
                 simulation.scene.step()
                 if simulation._contacts():
@@ -146,7 +143,12 @@ def _generate_episode(job: dict[str, Any]) -> dict[str, Any]:
                 break
 
     if not accepted:
-        raise RuntimeError(f"No safe recovery samples accepted for {episode}")
+        # A tightened, faithful collision envelope can reject every attempted
+        # perturbation in a narrow passage. Record rejection rather than weaken
+        # clearance requirements or discard the entire generation job.
+        (output / f"{episode}.npz").unlink(missing_ok=True)
+        return {"episode": episode, "route": job["route"], "requested": len(frame_indices),
+                "accepted": 0, "minimum_clearance_m": None}
     output.mkdir(parents=True, exist_ok=True)
     archive = output / f"{episode}.npz"
     temporary = output / f"{episode}.npz.tmp"
@@ -215,15 +217,18 @@ def generate_recovery(benchmark: dict[str, Any], eval_options: dict[str, Any], o
               for route in ROUTES}
     report = {
         "schema_version": "tsn-1k-recovery-v1", "source_dataset": str(root),
-        "source_partition": "train", "episode_ids": train_ids,
+        "source_partition": "train", "episode_ids": [value["episode"] for value in results if value["accepted"]],
+        "requested_episode_ids": train_ids,
         "parameters": {
             "samples_per_episode": samples_per_episode, "noise_std_rad": noise_std_rad,
             "noise_max_rad": noise_max_rad, "minimum_clearance_m": minimum_clearance_m,
             "max_attempts_per_frame": max_attempts, "chunk_size": chunk_size,
         },
-        "episodes": len(results), "samples": sum(counts.values()), "samples_by_route": counts,
-        "route_episode_counts": {route: sum(value["route"] == route for value in results) for route in ROUTES},
-        "minimum_clearance_m": min(value["minimum_clearance_m"] for value in results),
+        "episodes": sum(value["accepted"] > 0 for value in results),
+        "rejected_episodes": [value["episode"] for value in results if not value["accepted"]],
+        "samples": sum(counts.values()), "samples_by_route": counts,
+        "route_episode_counts": {route: sum(value["route"] == route and value["accepted"] > 0 for value in results) for route in ROUTES},
+        "minimum_clearance_m": min((value["minimum_clearance_m"] for value in results if value["accepted"]), default=None),
         "wall_seconds": time.perf_counter() - start, "results": results,
     }
     write_json(output / "manifest.json", report)

@@ -1,0 +1,49 @@
+{
+  "name": "geometry_policy",
+  "state_dim": 16,
+  "action_dim": 7,
+  "chunk_size": 30,
+  "action_scale_rad": 0.75,
+  "encoder_channels": [
+    32,
+    64,
+    128,
+    192
+  ],
+  "spatial_pool_size": 4,
+  "map_feature_dim": 384,
+  "state_feature_dim": 128,
+  "hidden_dim": 256,
+  "dropout": 0.1,
+  "map_channels": [
+    "point_x",
+    "point_y",
+    "point_z",
+    "goal_projected",
+    "goal_visible",
+    "future_action"
+  ],
+  "action_map_source": "expert_future",
+  "maps": {
+    "height": 80,
+    "width": 80,
+    "goal_sigma_m": 0.04,
+    "action_sigma_m": 0.02,
+    "action_decay_steps": 20.0,
+    "cutoff_sigma": 3.0,
+    "occlusion_tolerance_m": 0.015,
+    "near_m": 0.02,
+    "far_m": 2.0,
+    "point_center_m": [
+      0.65,
+      0.0,
+      0.22
+    ],
+    "point_scale_m": [
+      0.55,
+      0.55,
+      0.5
+    ],
+    "trajectory_block_size": 8
+  }
+}

@@ -46,6 +46,18 @@ class RecoveryDataset(Dataset):
                         raise ValueError(f"{path}: {key} has shape {actual}; expected {shape}")
                 if data["depth"].ndim != 3 or len(data["depth"]) != count:
                     raise ValueError(f"{path}: invalid depth shape")
+                # Legacy archives masked known endpoint holds. Admit only prefix
+                # masks whose padded targets repeat the final known target.
+                for sample in range(count):
+                    valid = data["valid_future"][sample].astype(bool)
+                    size = int(valid.sum())
+                    if not np.array_equal(valid, np.arange(self.chunk_size) < size):
+                        raise ValueError(f"{path}: future mask is not a contiguous prefix")
+                    if size < self.chunk_size:
+                        anchor = max(0, size - 1)
+                        for key in ("target", "future_ee"):
+                            if not np.allclose(data[key][sample, size:], data[key][sample, anchor], atol=1e-6):
+                                raise ValueError(f"{path}: unavailable future observations are not terminal holds")
             self.samples.extend((file_index, index) for index in range(count))
             self.route_indices.extend([ROUTES.index(route)] * count)
             self.episode_ids.extend([episode] * count)
@@ -81,7 +93,7 @@ class RecoveryDataset(Dataset):
             "qpos": torch.from_numpy(data["qpos"][sample_index].astype(np.float32)),
             "goal_pose": torch.from_numpy(data["goal_pose"][sample_index].astype(np.float32)),
             "target": torch.from_numpy(data["target"][sample_index].astype(np.float32)),
-            "valid_future": torch.from_numpy(data["valid_future"][sample_index].astype(bool)),
+            "valid_future": torch.ones(self.chunk_size, dtype=torch.bool),
             "route": self.route_indices[index],
             "episode_id": self.episode_ids[index] + "_recovery",
             "frame_index": int(data["frame_index"][sample_index]),

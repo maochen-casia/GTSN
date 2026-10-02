@@ -56,7 +56,7 @@ GTSN/
 The experiment log, result, checkpoint, should be saved in `/run/user/1016/experiments`.
 
 ## Task
-The first stage of training and closed-loop testing has been finished, in `/run/user/1016/experiments/geometry_baseline_gpu_20261001/`. Now please try to introduce recovery data, as in `tsn_old`, and then see if performance can be improved. Only train model for 10 epochs. 
+The second stage of training and closed-loop testing has been finished, in `/run/user/1016/experiments/geometry_baseline_gpu_20261001_recovery10`. Now please try to introduce on-policy recovery data based on this checkpoint, like in `tsn_old`, rather than only perturbing the joint states to generate recovery data. Incorporating both perturbing-based recovery data and on-policy recovery data. Then initialized using this checkpoint, while also incorporating recovery data for training 10 epochs, and then closed-loop testing at the end.
 
 ## Importante Notes
 You cannot directly install environment or packages in user environment. Instead, prepare the needed environment in Docker, and use Docker to run process. You can directly edit codes or scripts in user environment, and read files. If any actions require installing new packages, do it in docker. Keep the user environment clean.  You can only work on /home/chenmao/GTSN/ (for codes and scripts) and /run/user/1016/ (for data storage). You cannot edit or save anything outside these two directories.

@@ -49,13 +49,15 @@ def validate_episode(handle: h5py.File, route: str) -> int:
 
 
 def padded_future(values: np.ndarray, index: int, horizon: int) -> tuple[np.ndarray, np.ndarray]:
-    """Return t+1..t+H rows and a Boolean mask; hold the last state for terminal padding."""
+    """Return future targets including valid holds at the known terminal state."""
+    if len(values) == 0 or not 0 <= index < len(values) or horizon <= 0:
+        raise ValueError("Future targets require a trajectory, valid index and positive horizon")
     suffix = values[index + 1:index + horizon + 1]
     size = len(suffix)
     if not size:
         suffix = values[-1:]
     padded = np.concatenate((suffix, np.repeat(suffix[-1:], horizon - len(suffix), axis=0)))
-    return padded, np.arange(horizon) < size
+    return padded, np.ones(horizon, dtype=bool)
 
 
 class FrameDataset(Dataset):
@@ -63,7 +65,7 @@ class FrameDataset(Dataset):
 
     Each sample contains depth (H,W), camera transforms (4,4), calibration
     (3,3), qpos (9,), goal (7,), target (chunk,7), future_ee (chunk,3), and
-    valid_future (chunk,). Terminal padding is masked in loss and map generation.
+    valid_future (chunk,). Terminal holds are supervised in loss and map generation.
     File handles are opened lazily per process and bounded by an LRU cache.
     """
 

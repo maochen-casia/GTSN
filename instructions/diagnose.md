@@ -1,0 +1,8 @@
+## Problem
+The old version baseline (`tsn_old`)'s performance significantly improved after introducing on-policy recovery data. But current reimplemented baseline's performance under mixed recovery data (perturbation + on-policy recovery data) (geometry_baseline_gpu_20261001_recovery10_mixed_ft10_retry1_20261001T111248826869Z) is worse than only introducing perturbing recovery data (geometry_baseline_gpu_20261001_recovery10). Please diagnose what could be the problem? I used to run old baseline on another similar benchmark. So the benchmark maynot be strictly the same. But it is still strange for this phenomenon.
+
+## Task
+You need to compare the codes of two version (current project vs `tsn_old/`), and analyze the potential problems. You should conduct static analysis without running experiments or revising codes. Just try to find the problems and propose solutions.
+
+## Importante Notes
+You cannot directly install environment or packages in user environment. Instead, prepare the needed environment in Docker, and use Docker to run process. You can directly edit codes or scripts in user environment, and read files. If any actions require installing new packages, do it in docker. Keep the user environment clean.  You can only work on /home/chenmao/GTSN/ (for codes and scripts) and /run/user/1016/ (for data storage and experiment results). You cannot edit or save anything outside these two directories.

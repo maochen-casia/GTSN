@@ -13,7 +13,7 @@ from typing import Any
 import torch
 
 from tsn.common.checkpoint import load_checkpoint, save_checkpoint
-from tsn.common.config import experiment_path, write_json
+from tsn.common.config import experiment_path, read_json, write_json
 from tsn.common.seed import require_device, seed_everything
 from tsn.data.hdf5_dataset import FrameDataset
 from tsn.data.loaders import make_loader, make_recovery_loader
@@ -60,45 +60,77 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
         "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU",
     })
     datasets: dict[str, FrameDataset] = {}
-    recovery_dataset: RecoveryDataset | None = None
+    recovery_datasets: list[RecoveryDataset] = []
     try:
         for partition in ("train", "validation"):
             datasets[partition] = FrameDataset(
                 Path(benchmark["root"]), split[partition], catalog, int(model_config["chunk_size"]),
                 int(options["frame_stride"]), int(options["max_open_files"]),
             )
-        recovery_dir = options.get("recovery_data_dir")
-        if recovery_dir:
-            recovery_root = Path(recovery_dir)
-            recovery_dataset = RecoveryDataset(recovery_root, int(model_config["chunk_size"]))
+        recovery_sources = options.get("recovery_sources")
+        if recovery_sources is None:
+            recovery_dir = options.get("recovery_data_dir")
+            recovery_sources = ([{
+                "path": recovery_dir,
+                "sampling_fraction": options.get("recovery_sampling_fraction"),
+            }] if recovery_dir else [])
+        recovery_fractions: list[float] = []
+        resolved_sources: list[dict[str, Any]] = []
+        seen_recovery_dirs: set[Path] = set()
+        for index, source in enumerate(recovery_sources):
+            if not isinstance(source, dict) or not source.get("path"):
+                raise ValueError(f"Recovery source {index} must define a data path")
+            if source.get("sampling_fraction") is None:
+                raise ValueError(f"Recovery source {index} must define sampling_fraction")
+            recovery_root = Path(source["path"]).resolve()
+            if recovery_root in seen_recovery_dirs:
+                raise ValueError(f"Recovery source is listed more than once: {recovery_root}")
+            seen_recovery_dirs.add(recovery_root)
+            recovery = RecoveryDataset(recovery_root, int(model_config["chunk_size"]))
+            recovery_datasets.append(recovery)
             manifest_path = recovery_root / "manifest.json"
             if not manifest_path.is_file():
                 raise FileNotFoundError(f"Missing recovery manifest: {manifest_path}")
             recovery_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             if recovery_manifest.get("source_partition") != "train":
                 raise ValueError("Recovery data must be generated from the training partition")
-            recovery_ids = set(recovery_dataset.route_by_episode)
+            recovery_ids = set(recovery.route_by_episode)
             manifest_ids = set(recovery_manifest.get("episode_ids", []))
             if recovery_manifest.get("source_dataset") != str(Path(benchmark["root"])):
                 raise ValueError("Recovery data was generated from a different benchmark root")
-            if manifest_ids != set(split["train"]) or recovery_ids != manifest_ids:
-                raise ValueError("Recovery data must include exactly the current training episodes")
+            if not manifest_ids or manifest_ids - set(split["train"]):
+                raise ValueError("Recovery data must come from episodes in the current training split")
+            if recovery_ids != manifest_ids:
+                raise ValueError("Recovery archives must match the episode IDs in their manifest")
+            recovery_fractions.append(float(source["sampling_fraction"]))
+            resolved_sources.append({
+                **source,
+                "path": str(recovery_root),
+                "samples": len(recovery),
+                "episodes": len(recovery_ids),
+            })
+        if recovery_datasets:
             train_loader = make_recovery_loader(
-                datasets["train"], recovery_dataset, options, int(options["seed"]),
-                float(options["recovery_sampling_fraction"]),
-                {route: int(count) / sum(benchmark["route_counts"].values())
-                 for route, count in benchmark["route_counts"].items()},
+                datasets["train"], recovery_datasets, options, int(options["seed"]),
+                recovery_fractions,
+                options.get("route_sampling_fractions", {
+                    route: int(count) / sum(benchmark["route_counts"].values())
+                    for route, count in benchmark["route_counts"].items()}),
             )
         else:
-            recovery_manifest = None
             train_loader = make_loader(datasets["train"], options, True, int(options["seed"]))
         validation_loader = make_loader(datasets["validation"], options, False, int(options["seed"]) + 1)
         model = make_policy(model_config).to(device)
         initialize_from = options.get("initialize_from_checkpoint")
         if initialize_from:
             initialization = load_checkpoint(Path(initialize_from))
-            if initialization["config"]["model"] != model_config:
+            original_model = initialization["config"]["model"]
+            architectural_config = {k: v for k, v in model_config.items() if k != "maps"}
+            if {k: v for k, v in original_model.items() if k != "maps"} != architectural_config:
                 raise ValueError("Initialization checkpoint uses a different model configuration")
+            if original_model.get("maps") != model_config.get("maps"):
+                logger.info("Initialization map settings changed explicitly: %s -> %s",
+                            original_model.get("maps"), model_config.get("maps"))
             if initialization["splits"] != split:
                 raise ValueError("Initialization checkpoint uses a different data split")
             model.load_state_dict(initialization["model"], strict=True)
@@ -112,12 +144,58 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
         scaler = torch.amp.GradScaler("cuda", enabled=amp)
         best_rmse = math.inf
         best_epoch = 0
+        selection = options.get("checkpoint_selection", {"method": "expert_rmse"})
+        selection_method = selection["method"]
+        if selection_method not in {"expert_rmse", "parent_or_final_recovery"}:
+            raise ValueError("Unsupported checkpoint selection method")
+        candidate = None
+        recovery_validation_loader = None
+        if selection_method == "parent_or_final_recovery":
+            from tsn.training.selection import validation_episodes, evaluate_candidate
+            if not initialize_from:
+                raise ValueError("Recovery selection requires an initialization checkpoint")
+            validation_recovery = RecoveryDataset(Path(selection["recovery_data_dir"]), model.chunk_size)
+            recovery_datasets.append(validation_recovery)
+            if set(validation_recovery.route_by_episode) - set(split["validation"]):
+                raise ValueError("Checkpoint selection recovery states must belong to validation")
+            recovery_validation_loader = make_loader(validation_recovery, options, False, int(options["seed"]) + 2)
+            selection_ids = validation_episodes(split, catalog, selection["episodes_by_route"], int(options["seed"]) + 3)
+            selection_options = read_json(selection["eval_config"])
+            selection_options["device"] = str(device)
+            write_json(output / "selection_protocol.json", {
+                **selection, "episodes": selection_ids, "source_partition": "validation",
+                "candidates": ["parent", "final_epoch"],
+                "ranking": ["success_rate", "negative_collision_rate", "negative_recovery_rmse", "negative_expert_rmse"],
+                "ties": "retain parent", "eval": selection_options,
+            })
+        if initialize_from:
+            parent_validation = evaluate_predictions(model, maps, validation_loader, device)
+            best_rmse = parent_validation["rmse_rad"]
+            parent_payload = {
+                **initialization, "epoch": 0, "config": configuration, "splits": split,
+                "model": model.state_dict(), "validation": parent_validation,
+                "best_rmse_rad": best_rmse, "best_epoch": 0,
+                "initialize_from_checkpoint": str(initialize_from),
+                "recovery_sources": resolved_sources, "selection_method": selection_method,
+            }
+            if recovery_validation_loader is not None:
+                parent_recovery = evaluate_predictions(model, maps, recovery_validation_loader, device)
+                candidate = evaluate_candidate(model, maps, device, Path(benchmark["root"]),
+                    output / "selection" / "parent", selection_ids, catalog, selection_options,
+                    parent_validation, parent_recovery)
+                parent_payload["recovery_selection"] = candidate
+            save_checkpoint(output / "parent.pt", parent_payload)
+            save_checkpoint(output / "best.pt", parent_payload)
+            write_json(output / "parent_validation.json", parent_validation)
+            logger.info("Parent candidate validation RMSE %.6f rad", best_rmse)
         logger.info("Run %s: %d training frames, %d validation frames; expert future action maps",
                     output.name, len(datasets["train"]), len(datasets["validation"]))
-        if recovery_dataset is not None:
-            logger.info("Recovery fine-tuning: %d samples (%.1f%% of sampled frames), initialized from %s",
-                        len(recovery_dataset), 100 * float(options["recovery_sampling_fraction"]),
-                        initialize_from)
+        if recovery_datasets:
+            logger.info("Recovery fine-tuning initialized from %s", initialize_from)
+            for source in resolved_sources:
+                logger.info("  %s: %d samples, %.1f%% of sampled frames",
+                            source.get("name", Path(source["path"]).name), source["samples"],
+                            100 * float(source["sampling_fraction"]))
         for epoch in range(1, int(options["epochs"]) + 1):
             started = time.perf_counter()
             model.train()
@@ -147,7 +225,19 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
                 if step % 100 == 0:
                     logger.info("Epoch %d batch %d/%d loss %.6f", epoch, step, len(train_loader), total_loss / samples)
             validation = evaluate_predictions(model, maps, validation_loader, device)
-            improved = validation["rmse_rad"] < best_rmse
+            improved = validation["rmse_rad"] < best_rmse if selection_method == "expert_rmse" else False
+            recovery_selection = None
+            if selection_method == "parent_or_final_recovery" and epoch == int(options["epochs"]):
+                recovery_metrics = evaluate_predictions(model, maps, recovery_validation_loader, device)
+                recovery_selection = evaluate_candidate(model, maps, device, Path(benchmark["root"]),
+                    output / "selection" / "final", selection_ids, catalog, selection_options,
+                    validation, recovery_metrics)
+                improved = tuple(recovery_selection["selection_key"]) > tuple(candidate["selection_key"])
+                write_json(output / "checkpoint_selection.json", {
+                    "parent": candidate, "final": recovery_selection,
+                    "selected": "final_epoch" if improved else "parent",
+                    "selected_epoch": epoch if improved else 0,
+                })
             if improved:
                 best_rmse, best_epoch = validation["rmse_rad"], epoch
             scheduler.step()
@@ -162,7 +252,8 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
                 "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(),
                 "validation": validation, "best_rmse_rad": best_rmse, "best_epoch": best_epoch,
                 "initialize_from_checkpoint": str(initialize_from) if initialize_from else None,
-                "recovery_data_dir": str(options["recovery_data_dir"]) if recovery_dataset else None,
+                "recovery_sources": resolved_sources,
+                "selection_method": selection_method, "recovery_selection": recovery_selection,
             }
             save_checkpoint(output / "latest.pt", payload)
             if improved:
@@ -171,8 +262,12 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
                 "completed_epochs": epoch, "best_epoch": best_epoch, "best_validation_rmse_rad": best_rmse,
                 "best_checkpoint": str(output / "best.pt"), "privileged_action_map": True,
                 "initialize_from_checkpoint": str(initialize_from) if initialize_from else None,
-                "recovery_train_samples": len(recovery_dataset) if recovery_dataset else 0,
-                "recovery_sampling_fraction": float(options.get("recovery_sampling_fraction", 0.0)),
+                "recovery_train_samples": sum(source["samples"] for source in resolved_sources),
+                "recovery_sources": resolved_sources,
+                "recovery_sampling_fraction": sum(recovery_fractions),
+                "expert_sampling_fraction": 1.0 - sum(recovery_fractions),
+                "selection_method": selection_method,
+                "route_sampling_fractions": options.get("route_sampling_fractions"),
             })
             logger.info("Epoch %d/%d train loss %.6f validation RMSE %.6f rad (best epoch %d)",
                         epoch, options["epochs"], total_loss / samples, validation["rmse_rad"], best_epoch)
@@ -180,8 +275,8 @@ def train(benchmark: dict[str, Any], model_config: dict[str, Any], options: dict
     finally:
         for dataset in datasets.values():
             dataset.close()
-        if recovery_dataset is not None:
-            recovery_dataset.close()
+        for recovery in recovery_datasets:
+            recovery.close()
         for handler in (stream, file_log):
             logger.removeHandler(handler)
             handler.close()
