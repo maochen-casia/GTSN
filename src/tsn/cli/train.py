@@ -1,31 +1,32 @@
-"""Usage: python -m tsn.cli.train [--run-dir /run/user/1016/experiments/NAME]."""
-
+"""Train only the compact memory head, using an existing frozen Pi3 checkpoint."""
 import argparse
-from datetime import datetime, timezone
 from pathlib import Path
 
-from tsn.common.config import default_config, read_json
+import torch
+
+from tsn.common.config import default_config, output_path, read_json
 from tsn.training.runner import train
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--benchmark-config", type=Path, default=default_config("benchmark", "tsn-1k.json"))
-    parser.add_argument("--model-config", type=Path, default=default_config("model", "geometry_policy.json"))
-    parser.add_argument("--train-config", type=Path, default=default_config("train", "baseline.json"))
-    parser.add_argument("--run-dir", type=Path, help="New external run directory; existing directories are rejected")
-    parser.add_argument("--device", help="Override configured device, e.g. cuda:0 or cpu")
+    parser.add_argument('--checkpoint', type=Path, required=True,
+                        help='Compact export or the reference epoch-15 baseline.pt')
+    parser.add_argument('--output-dir', type=Path, required=True, help='New directory for this run')
+    parser.add_argument('--config', type=Path, default=default_config('train', 'compact.json'))
+    parser.add_argument('--device', default=None)
     args = parser.parse_args()
-    benchmark, model, options = (read_json(path) for path in (
-        args.benchmark_config, args.model_config, args.train_config))
+    options = read_json(args.config)
     if args.device:
-        options["device"] = args.device
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    output = args.run_dir or Path(options["experiment_root"]) / f"{options['run_name']}_{timestamp}"
-    checkpoint = train(benchmark, model, options, output)
-    print(f"Best checkpoint: {checkpoint}")
+        options['device'] = args.device
+    for key in ('epochs', 'batch_size', 'cache_batch_size'):
+        if options[key] <= 0:
+            parser.error(f'{key} must be positive')
+    if options['num_workers'] < 0 or options['learning_rate'] <= 0 or options['weight_decay'] < 0:
+        parser.error('Invalid worker count or optimizer settings')
+    torch.set_num_threads(1)
+    train(args.checkpoint, output_path(args.output_dir), options)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
-

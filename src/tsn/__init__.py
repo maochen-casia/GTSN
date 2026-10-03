@@ -1,1 +1,1 @@
-"""Independent tsn-1k geometry-policy implementation."""
+"""GTSN single-memory navigation policy."""

@@ -1,4 +1,4 @@
-"""Independent residual CNN and state MLP for joint action-chunk regression."""
+"""Pi3 residual CNN and state MLP for joint action-chunk regression."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class SpatialStage(nn.Module):
         return torch.nn.functional.silu(encoded + self.refine(encoded))
 
 
-class GeometryPolicy(nn.Module):
+class MapActionHead(nn.Module):
     """Fuse maps (B,6,H,W) and state (B,16) into residual arm targets (B,L,7).
 
     Each horizon target is a displacement from the SAME observed qpos, rather

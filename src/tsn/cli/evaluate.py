@@ -1,76 +1,54 @@
-"""Usage: python -m tsn.cli.evaluate --checkpoint /run/user/1016/experiments/RUN/best.pt."""
-
+"""Run closed-loop validation or testing with the single-memory compact model."""
 import argparse
-from datetime import datetime, timezone
 from pathlib import Path
 
-from tsn.common.checkpoint import load_checkpoint
-from tsn.common.config import default_config, experiment_path, read_json, write_json
+import torch
+
+from tsn.common.config import create_output, output_path, read_json, write_json
 from tsn.common.seed import require_device, seed_everything
-from tsn.data.hdf5_dataset import FrameDataset
-from tsn.data.loaders import make_loader
 from tsn.data.splits import episode_catalog, validate_splits
-from tsn.evaluation.open_loop import evaluate_predictions
-from tsn.models.factory import make_maps, make_policy
+from tsn.evaluation.closed_loop import evaluate_rollouts
+from tsn.models.compact_policy import load_compact_policy
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--eval-config", type=Path, default=default_config("eval", "closed_loop.json"))
-    parser.add_argument("--mode", choices=("open-loop", "closed-loop", "both"), default="both")
-    parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--dataset-root", type=Path)
-    parser.add_argument("--device")
-    parser.add_argument("--episode", action="append", help="Restrict evaluation to listed checkpoint test episodes")
-    parser.add_argument("--render-videos", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument('--checkpoint', type=Path, required=True)
+    parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--partition', choices=('validation', 'test'), required=True)
+    parser.add_argument('--episode', action='append', help='Optional subset of the selected partition')
+    parser.add_argument('--dataset-root', type=Path)
+    parser.add_argument('--eval-config', type=Path, help='Override checkpoint rollout settings')
+    parser.add_argument('--device', default='cuda')
+    parser.add_argument('--render-videos', action=argparse.BooleanOptionalAction, default=None)
     args = parser.parse_args()
-    options = read_json(args.eval_config)
-    if args.device:
-        options["device"] = args.device
-    if args.render_videos is not None:
-        options["render_videos"] = args.render_videos
-    checkpoint = load_checkpoint(args.checkpoint)
-    configuration = checkpoint["config"]
-    seed_everything(int(configuration["train"]["seed"]))
-    device = require_device(options["device"])
-    root = args.dataset_root or Path(configuration["benchmark"]["root"])
+    output = output_path(args.output_dir)
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        parser.error('Output directory already exists; use a new directory')
+    torch.set_num_threads(1)
+    device = require_device(args.device)
+    policy, maps, checkpoint = load_compact_policy(args.checkpoint, device)
+    config, splits = checkpoint['config'], checkpoint['splits']
+    seed_everything(config['train'].get('seed', 20261002))
+    root = args.dataset_root or Path(config['benchmark']['root'])
     catalog = episode_catalog(root)
-    split = checkpoint["splits"]
-    validate_splits(split, catalog)
-    ids = args.episode or split["test"]
-    if len(ids) != len(set(ids)) or set(ids) - set(split["test"]):
-        raise ValueError("Evaluation episodes must be unique members of the checkpoint's test split")
-    model = make_policy(configuration["model"], initialize_backbone=False).to(device)
-    model.load_state_dict(checkpoint["model"], strict=True)
-    model.eval()
-    maps = make_maps(configuration["model"]).to(device)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    output = experiment_path(args.output_dir or args.checkpoint.resolve().parent / f"evaluation_{timestamp}")
-    output.mkdir(parents=True, exist_ok=False)
-    write_json(output / "config.json", {"checkpoint": str(args.checkpoint.resolve()),
-                                       "checkpoint_epoch": checkpoint["epoch"], "mode": args.mode,
-                                       "dataset_root": str(root), "episodes": ids, "eval": options,
-                                       "model": configuration["model"],
-                                       "full_test_split": set(ids) == set(split["test"]),
-                                       "privileged_action_map": not getattr(model, 'uses_predicted_maps', False)})
-    write_json(output / "splits.json", split)
-    if args.mode in ("open-loop", "both"):
-        dataset = FrameDataset(root, ids, catalog, model.chunk_size, int(options["frame_stride"]),
-                               include_rgb=getattr(model, 'uses_predicted_maps', False))
-        try:
-            loader = make_loader(dataset, options, False, int(configuration["train"]["seed"]))
-            metrics = evaluate_predictions(model, maps, loader, device)
-            write_json(output / "open_loop.json", metrics)
-            print(f"Test open-loop RMSE: {metrics['rmse_rad']:.6f} rad", flush=True)
-        finally:
-            dataset.close()
-    if args.mode in ("closed-loop", "both"):
-        # Keep simulator/renderer imports out of open-loop-only evaluations.
-        from tsn.evaluation.closed_loop import evaluate_rollouts
-        evaluate_rollouts(ids, catalog, root, output, model, maps, device, options)
-    print(f"Evaluation artifacts: {output}")
+    validate_splits(splits, catalog)
+    ids = args.episode or splits[args.partition]
+    if not ids or len(ids) != len(set(ids)) or set(ids) - set(splits[args.partition]):
+        parser.error('Episodes must be unique members of the selected checkpoint partition')
+    options = read_json(args.eval_config) if args.eval_config else dict(config['eval'])
+    if options['execute_horizon'] != policy.execute:
+        parser.error('The compact controller requires execute_horizon=15')
+    options['device'] = str(device)
+    if args.render_videos is not None:
+        options['render_videos'] = args.render_videos
+    create_output(output)
+    write_json(output / 'config.json', dict(checkpoint=str(args.checkpoint.resolve()),
+               partition=args.partition, episodes=ids, dataset_root=str(root), eval=options,
+               full_partition=set(ids) == set(splits[args.partition]), variant='single_memory'))
+    evaluate_rollouts(ids, catalog, root, output, policy, maps, device, options)
+    write_json(output / 'complete.json', dict(episodes=len(ids), partition=args.partition, variant='single_memory'))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

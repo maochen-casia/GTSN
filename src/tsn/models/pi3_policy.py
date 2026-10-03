@@ -13,7 +13,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from tsn.models.geometry_policy import GeometryPolicy
+from tsn.models.map_action_head import MapActionHead
 
 
 class DevicePositionGetter:
@@ -85,7 +85,7 @@ class Pi3MapPolicy(nn.Module):
         self.action_map_head = nn.Linear(768, 14 * 14)
         nn.init.constant_(self.goal_head.bias, -3.0)
         nn.init.constant_(self.action_map_head.bias, -3.0)
-        self.action_policy = GeometryPolicy(**{k: config[k] for k in inspect.signature(GeometryPolicy).parameters})
+        self.action_policy = MapActionHead(**{k: config[k] for k in inspect.signature(MapActionHead).parameters})
         self.chunk_size = self.action_policy.chunk_size
         self.register_buffer('image_mean', torch.tensor([.485, .456, .406]).view(1, 3, 1, 1))
         self.register_buffer('image_std', torch.tensor([.229, .224, .225]).view(1, 3, 1, 1))

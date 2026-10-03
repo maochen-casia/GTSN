@@ -23,12 +23,20 @@ def write_json(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
-def experiment_path(path: str | Path) -> Path:
-    """Require writable experiment artifacts to remain under the requested root."""
+def output_path(path: str | Path) -> Path:
+    """Keep new runs in the project or the user's experiment storage."""
     resolved = Path(path).resolve()
-    if not resolved.is_relative_to(EXPERIMENT_ROOT.resolve()):
-        raise ValueError(f"Experiment output must be under {EXPERIMENT_ROOT}: {resolved}")
+    roots = (PROJECT_ROOT / 'runs', Path('/home/chenmao/GTSN/runs'), EXPERIMENT_ROOT)
+    if not any(resolved.is_relative_to(root) and resolved != root for root in roots):
+        raise ValueError('Output must be under project runs/ or /run/user/1016/experiments/')
     return resolved
+
+
+def create_output(path: Path) -> None:
+    """Allow a new directory or an empty Docker bind mount; never overwrite a run."""
+    if path.exists() and (not path.is_dir() or any(path.iterdir())):
+        raise FileExistsError(f'Output directory is not empty: {path}')
+    path.mkdir(parents=True, exist_ok=True)
 
 
 def default_config(kind: str, filename: str) -> Path:

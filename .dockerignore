@@ -7,3 +7,5 @@ tsn_old
 **/*.egg-info
 .venv
 
+runs
+.cleanup*
