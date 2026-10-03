@@ -12,13 +12,20 @@ def main():
     parser.add_argument('--gpu', default='all', help='GPU ID, comma-separated IDs, or all')
     parser.add_argument('--cpu', action='store_true')
     parser.add_argument('--print-command', action='store_true')
-    parser.add_argument('command', choices=('train', 'evaluate', 'test'))
+    parser.add_argument('--source-snapshot', type=Path,
+                        help='Run an existing source snapshot within the project or experiment storage')
+    parser.add_argument('command', choices=('train', 'evaluate', 'research', 'report', 'calibrate_clearance', 'audit_research', 'test'))
     args, extra = parser.parse_known_args()
     root = Path(__file__).resolve().parents[1]
+    snapshot = args.source_snapshot.resolve() if args.source_snapshot else root
+    if args.source_snapshot and (not (snapshot/'src/tsn').is_dir() or
+            not any(snapshot.is_relative_to(base) for base in (root, Path('/run/user/1016/experiments')))):
+        parser.error('Source snapshot must contain src/tsn within the project or experiment storage')
     command = ['docker', 'run', '--rm', '--init', '--network', 'none', '--read-only',
                '--user', f'{os.getuid()}:{os.getgid()}', '--shm-size', '4g',
                '--tmpfs', '/tmp:rw,exec,size=2g']
-    for setting in ('PYTHONDONTWRITEBYTECODE=1', 'PYTHONPATH=/workspace/src:/workspace/vendor/Pi3',
+    python_path = '/workspace/src:/workspace/vendor/Pi3' if snapshot == root else f'{snapshot}/src:/workspace/vendor/Pi3'
+    for setting in ('PYTHONDONTWRITEBYTECODE=1', f'PYTHONPATH={python_path}',
                     'OMP_NUM_THREADS=1', 'OPENBLAS_NUM_THREADS=1', 'MKL_NUM_THREADS=1',
                     'LP_NUM_THREADS=1', 'XDG_CACHE_HOME=/tmp/cache', 'MPLCONFIGDIR=/tmp/matplotlib'):
         command += ['--env', setting]
@@ -53,7 +60,8 @@ def main():
             extra += ['--device', 'cpu']
         invocation = ['python', '-m', f'tsn.cli.{args.command}', *extra]
     else:
-        invocation = ['python', '-m', 'unittest', 'discover', '-s', '/workspace/tests', '-v', *extra]
+        tests = '/workspace/tests' if snapshot == root else str(snapshot/'tests')
+        invocation = ['python', '-m', 'unittest', 'discover', '-s', tests, '-v', *extra]
     command += [args.image, *invocation]
     print(shlex.join(command), flush=True)
     if not args.print_command:

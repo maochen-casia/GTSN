@@ -68,8 +68,14 @@ class CompactPolicy(nn.Module):
     def execution_horizon(self, default):
         return self.execute
 
+    def perceive(self, rgb, state, K, pose):
+        return self.backbone(rgb, state, K, pose, return_features=True)
+
+    def refine_waypoints(self, waypoints, rotation, tcp, near, pose):
+        return waypoints
+
     def forward(self, rgb, state, K, pose):
-        base, tokens, geom = self.backbone(rgb, state, K, pose, return_features=True)
+        base, tokens, geom = self.perceive(rgb, state, K, pose)
         self.history.append((tokens.detach(), geom.detach(), pose.detach(), self.step))
         self.history = self.history[-self.history_length:]
         q = state[:, :7].float() * math.pi
@@ -98,6 +104,7 @@ class CompactPolicy(nn.Module):
             predicted_rotation = self.kinematics(candidate)[..., :3, :3]
             initial = torch.where(near[:, None, None], initial, candidate)
             rotation = torch.where(near[:, None, None, None], rotation, predicted_rotation)
+            waypoints = self.refine_waypoints(waypoints, rotation, tcp, near, pose)
             targets = self.kinematics.inverse(initial.reshape(-1, 7), waypoints.reshape(-1, 3),
                                               rotation.reshape(-1, 3, 3))
         chunk = targets.reshape(-1, 30, 7) - q[:, None]
@@ -126,6 +133,14 @@ def compact_state(checkpoint, *, allow_training_source=False):
 def load_compact_policy(path, device='cpu', *, allow_training_source=False):
     """Load the saved single-memory export without constructing discarded models."""
     checkpoint = load_checkpoint(path)
+    if checkpoint.get('architecture') == 'route_evidence':
+        from tsn.models.evidence_policy import EvidenceRouteHead
+        policy, maps, source = load_compact_policy(checkpoint['base_checkpoint'], device)
+        head = EvidenceRouteHead(policy.head, **checkpoint['head_config'])
+        head.load_state_dict(checkpoint['head'], strict=True)
+        policy.head = head.to(device).eval()
+        policy.schedule = 'fixed15_route_evidence_' + head.variant
+        return policy, maps, {**source, **checkpoint}
     backbone_state, head_state = compact_state(checkpoint, allow_training_source=allow_training_source)
     config = checkpoint['config']['model']
     if config['name'] != 'pi3_map_policy' or config['action_map_source'] != 'predicted' or config['chunk_size'] != 30:

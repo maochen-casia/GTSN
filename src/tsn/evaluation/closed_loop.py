@@ -155,6 +155,8 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: CompactPo
                         execution_horizons=np.asarray(execution_history),
                         geometry_risk=np.asarray(risk_history))
     write_json(directory / "metrics.json", result)
+    if hasattr(model, 'diagnostics'):
+        write_json(directory / 'policy_diagnostics.json', model.diagnostics)
     return result
 
 
