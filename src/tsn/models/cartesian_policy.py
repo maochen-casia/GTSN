@@ -133,11 +133,15 @@ class CartesianPolicy(nn.Module):
     uses_predicted_maps = True
     chunk_size = 30
 
-    def __init__(self, backbone, head, kinematics, servo_radius=.08, execute=15, baseline=False, orientation='current'):
+    def __init__(self, backbone, head, kinematics, servo_radius=.08, execute=15, baseline=False, orientation='current',
+                 history_length=4):
         super().__init__()
         self.backbone, self.head, self.kinematics = backbone, head, kinematics
         self.servo_radius, self.execute, self.baseline = servo_radius, execute, baseline
         self.orientation = orientation
+        if history_length < 1:
+            raise ValueError('history_length must be positive')
+        self.history_length = history_length
         self.schedule = f'cartesian_{execute}_servo{servo_radius}'
         self.reset_episode()
 
@@ -153,7 +157,7 @@ class CartesianPolicy(nn.Module):
     def forward(self, rgb, state, K, pose):
         base, tokens, geom = self.backbone(rgb, state, K, pose, return_features=True)
         self.history.append((tokens.detach(), geom.detach(), pose.detach(), self.step))
-        self.history = self.history[-4:]
+        self.history = self.history[-self.history_length:]
         q = state[:, :7].float()*math.pi
         with torch.autocast(device_type=q.device.type, enabled=False):
             tcp = self.kinematics(q)

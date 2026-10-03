@@ -93,3 +93,10 @@ benchmark physics settings. `training/selection.py` isolates validation candidat
 `fix-experiment` executes acceptance, data generation, matched control/mixed runs,
 selection, and full test evaluation; see `documents/recovery_fix_experiment.md`.
 Its configurations are `configs/{model,train,eval}/recovery_fixed.json`.
+
+The frozen epoch-15 simplification study is documented in
+`documents/model_simplification.md`. `scripts/run_simplification_docker.py`
+snapshots and launches the matched ablations; `verify_simplification_docker.py`
+verifies the exported policy. `models/simplified_consensus.py` loads the standalone
+compact checkpoint, and `scripts/evaluate_simplified.py` evaluates its saved test
+split in Docker.
