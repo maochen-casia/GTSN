@@ -95,7 +95,8 @@ class Pi3MapPolicy(nn.Module):
         values = values.reshape(-1, h // 14, w // 14, 14, 14, channels)
         return values.permute(0, 5, 1, 3, 2, 4).reshape(-1, channels, h, w)
 
-    def forward_with_maps(self, rgb, state, calibration, camera_transform, return_features=False):
+    def forward_with_maps(self, rgb, state, calibration, camera_transform, return_features=False,
+                          return_maps=False):
         if rgb.ndim != 4 or rgb.shape[-1] != 3 or rgb.dtype != torch.uint8:
             raise ValueError('Expected sensor RGB as batched uint8 HWC images')
         h, w = self.input_hw
@@ -122,6 +123,8 @@ class Pi3MapPolicy(nn.Module):
             grid = hidden.transpose(1, 2).reshape(-1, 768, h // 14, w // 14)
             tokens = F.adaptive_avg_pool2d(grid, (4, 4)).flatten(2).transpose(1, 2)
             geometry = F.adaptive_avg_pool2d(predicted_maps, (4, 4)).flatten(2).transpose(1, 2)
+            if return_maps:
+                return action, tokens, geometry, predicted_maps
             return action, tokens, geometry
         return action, predicted_maps
 
@@ -129,5 +132,6 @@ class Pi3MapPolicy(nn.Module):
         # DataParallel creates worker autocast contexts; select bfloat16 explicitly.
         with torch.autocast(device_type=rgb.device.type, dtype=torch.bfloat16,
                             enabled=rgb.device.type == 'cuda'):
-            result = self.forward_with_maps(rgb, state, calibration, camera_transform, return_features)
+            result = self.forward_with_maps(rgb, state, calibration, camera_transform,
+                                            return_features, return_maps)
         return result if return_maps or return_features else result[0]
