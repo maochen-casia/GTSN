@@ -95,7 +95,7 @@ class Pi3MapPolicy(nn.Module):
         values = values.reshape(-1, h // 14, w // 14, 14, 14, channels)
         return values.permute(0, 5, 1, 3, 2, 4).reshape(-1, channels, h, w)
 
-    def forward_with_maps(self, rgb, state, calibration, camera_transform):
+    def forward_with_maps(self, rgb, state, calibration, camera_transform, return_features=False):
         if rgb.ndim != 4 or rgb.shape[-1] != 3 or rgb.dtype != torch.uint8:
             raise ValueError('Expected sensor RGB as batched uint8 HWC images')
         h, w = self.input_hw
@@ -117,11 +117,17 @@ class Pi3MapPolicy(nn.Module):
         action_map = self._unpatchify(self.action_map_head(hidden), 1).sigmoid()
         predicted_maps = F.interpolate(torch.cat((point, goal, action_map), 1),
                                        size=self.output_hw, mode='bilinear', align_corners=False)
-        return self.action_policy(predicted_maps, state), predicted_maps
+        action = self.action_policy(predicted_maps, state)
+        if return_features:
+            grid = hidden.transpose(1, 2).reshape(-1, 768, h // 14, w // 14)
+            tokens = F.adaptive_avg_pool2d(grid, (4, 4)).flatten(2).transpose(1, 2)
+            geometry = F.adaptive_avg_pool2d(predicted_maps, (4, 4)).flatten(2).transpose(1, 2)
+            return action, tokens, geometry
+        return action, predicted_maps
 
-    def forward(self, rgb, state, calibration, camera_transform, return_maps=False):
+    def forward(self, rgb, state, calibration, camera_transform, return_maps=False, return_features=False):
         # DataParallel creates worker autocast contexts; select bfloat16 explicitly.
         with torch.autocast(device_type=rgb.device.type, dtype=torch.bfloat16,
                             enabled=rgb.device.type == 'cuda'):
-            result = self.forward_with_maps(rgb, state, calibration, camera_transform)
-        return result if return_maps else result[0]
+            result = self.forward_with_maps(rgb, state, calibration, camera_transform, return_features)
+        return result if return_maps or return_features else result[0]

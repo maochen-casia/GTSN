@@ -74,6 +74,9 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: GeometryP
     writer = None
     started = time.perf_counter()
     model.eval()
+    if hasattr(model, 'reset_episode'):
+        model.reset_episode()
+    execution_history, risk_history = [], []
     with EpisodeSimulation(read_json(root / episode / "scene.json"), calibration,
                            camera_extrinsic, source_hw, expert_q[0], expert_ee[0], names, options) as simulation:
         try:
@@ -125,6 +128,8 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: GeometryP
                 normalized = policy_state(torch.as_tensor(state["qpos"], device=device)[None],
                                           goal_tensor, maps.settings)
                 if learned_maps:
+                    if hasattr(model, 'observe_step'):
+                        model.observe_step(steps)
                     with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                                         enabled=device.type == 'cuda'):
                         chunk = model(torch.as_tensor(rgb, device=device)[None], normalized, K,
@@ -138,11 +143,14 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: GeometryP
                     chunk = model(geometry, normalized)[0].float().cpu().numpy()
                 inference_seconds.append(time.perf_counter() - infer_start)
                 replans += 1
+                chosen_execute = model.execution_horizon(execute) if hasattr(model, 'execution_horizon') else execute
+                execution_history.append(chosen_execute)
+                risk_history.append(getattr(model, 'last_risk', 0.0))
                 supervised_horizon = (model.chunk_size if learned_maps else
                                       int(np.flatnonzero(~valid)[0]) if (~valid).any() else len(valid))
                 if supervised_horizon == 0:
                     raise ValueError("Cannot execute a chunk without supervised targets")
-                for action_index in range(min(execute, supervised_horizon, max_steps - steps)):
+                for action_index in range(min(chosen_execute, supervised_horizon, max_steps - steps)):
                     # All predictions in the chunk are relative to this replan's anchor.
                     target = anchor + chunk[action_index]
                     target_history.append(target.copy())
@@ -185,12 +193,15 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: GeometryP
         "wall_seconds": time.perf_counter() - started,
         "privileged_action_map": not learned_maps,
         "expert_progress_method": None if learned_maps else "monotonic nearest arm qpos",
+        "observation_schedule": getattr(model, 'schedule', 'fixed'),
         "scene_geometry": "tsn-1k complete room, object fittings, Panda v3 and collision envelopes",
     }
     np.savez_compressed(directory / "trajectory.npz", qpos=np.asarray(q_history),
                         T_B_E=np.asarray(ee_history), T_B_C=np.asarray(camera_history),
                         predicted_joint_targets=np.asarray(target_history).reshape(-1, 7),
-                        reference_indices=np.asarray(progress_history))
+                        reference_indices=np.asarray(progress_history),
+                        execution_horizons=np.asarray(execution_history),
+                        geometry_risk=np.asarray(risk_history))
     if recovery_root is not None and recovery_samples["depth"]:
         recovery_root.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
