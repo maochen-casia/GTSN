@@ -14,7 +14,7 @@ def main():
     parser.add_argument('--print-command', action='store_true')
     parser.add_argument('--source-snapshot', type=Path,
                         help='Run an existing source snapshot within the project or experiment storage')
-    parser.add_argument('command', choices=('train', 'evaluate', 'research', 'report', 'calibrate_clearance', 'audit_research', 'test'))
+    parser.add_argument('command', choices=('train', 'evaluate', 'research', 'report', 'calibrate_clearance', 'calibrate_geometry', 'audit_research', 'geometry_figure', 'test'))
     args, extra = parser.parse_known_args()
     root = Path(__file__).resolve().parents[1]
     snapshot = args.source_snapshot.resolve() if args.source_snapshot else root

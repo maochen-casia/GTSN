@@ -36,11 +36,18 @@ def diagnostics(directory):
         observations.extend(read_json(path))
     if not observations:
         return None
-    return dict(observations=len(observations),
+    summary = dict(observations=len(observations),
                 corrected_fraction=float(np.mean([x['choice'] != 0 and x['correction_m'] > 0 for x in observations])),
                 mean_correction_m=float(np.mean([x['correction_m'] for x in observations])),
                 mean_initial_risk=float(np.mean([x['risk'] for x in observations])),
                 mean_retained_points=float(np.mean([x['points'] for x in observations])))
+    if 'removed_history_points' in observations[0]:
+        removed = sum(x['removed_history_points'] for x in observations)
+        checked = sum(x['historical_valid_before'] for x in observations)
+        summary.update(removed_history_point_checks=removed, historical_valid_point_checks=checked,
+                       removed_fraction_of_history_checks=removed/checked if checked else None,
+                       mean_removed_history_points_per_observation=removed/len(observations))
+    return summary
 
 
 def main():
@@ -49,6 +56,7 @@ def main():
     parser.add_argument('--reference', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--device', default='cpu', choices=('cpu',))
+    parser.add_argument('--candidate', help='Condition to illustrate in paired trajectory figures')
     args = parser.parse_args()
     create_output(args.output_dir)
     reference = read_json(args.reference/'closed_loop.json')
@@ -86,6 +94,9 @@ def main():
                 'without_correction_penalty': 'No correction penalty',
                 'without_hand_extent': 'TCP only',
                 'without_surface_memory': 'Current surfaces only'}
+    friendly.update(visibility_004='Visibility update (4 cm)', visibility_008='Visibility update (8 cm)',
+                    shift_pos='Geometry shifted +10 cm', shift_neg='Geometry shifted −10 cm',
+                    calibrated='Training bias calibration', pooled_mean='Learned mean correction')
     labels = [friendly.get(name, name) for name in names]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), constrained_layout=True)
     axes[0].barh(labels, [results[x]['overall']['success_rate']*100 for x in names], color='#237a98')
@@ -121,7 +132,9 @@ def main():
         for suffix in ('png', 'pdf'):
             fig.savefig(args.output_dir/f'paired_effects.{suffix}', dpi=180)
         plt.close(fig)
-    candidate_name = next((name for name in ('method', 'full', 'full_p008') if name in raw), None)
+    candidate_name = args.candidate or next((name for name in ('method', 'full', 'full_p008') if name in raw), None)
+    if candidate_name and candidate_name not in raw:
+        raise ValueError(f'Unknown paired-figure candidate: {candidate_name}')
     if candidate_name:
         from matplotlib.patches import Polygon
         original = {x['episode_id']: x for x in reference['results']}

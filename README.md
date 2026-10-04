@@ -96,17 +96,17 @@ describes the current research and experiments. Other historical documents may
 refer to removed experiments. The pre-existing `tsn_old/`
 nested checkout is not used by this package or included in its Docker build.
 
-## Research extension: preserve the route, correct the clearance
+## Research extension: geometry-grounded navigation
 
 The current research story and its claim boundaries are in
 [`documents/research_story.md`](documents/research_story.md). The extension retains
-the compact checkpoint and queries its RGB-predicted surfaces with the proposed
-hand motion. It stores four observations, uses a fixed surface-proximity scale,
-and selects a bounded route correction with a penalty for departure from the
-proposal. It adds no trainable
+the compact checkpoint and builds a persistent geometric proximity field from
+RGB-predicted surfaces in robot coordinates. It stores four observations and
+queries the field with the proposed hand motion. A bounded route correction
+connects this geometric representation to execution. It adds no trainable
 weights. Depth and simulator object poses remain unavailable to the policy.
 
-The revised method is `deterministic`, margin `0.04` m, and correction penalty
+The established geometry-grounded method is `deterministic`, margin `0.04` m, and correction penalty
 `0.08`. It obtains 85% validation and 83% test success, versus 82% and 78% for
 the compact baseline. This is an exploratory choice informed by earlier test
 results; the original validation-selected uncertainty variant remains reported
@@ -153,6 +153,54 @@ python3 scripts/run_route_preserving_study.py \
 The completed source snapshots, protocols, trajectories, and reports are stored
 under `/run/user/1016/experiments/gtsn_research_20261003/` and
 `/run/user/1016/experiments/gtsn_route_preserving_20261003/`.
+
+The geometry-centered follow-up adds a visibility-consistency update and matched
+spatial-alignment interventions. `--geometry-update visibility` keeps occluded
+or unmatched history while removing points contradicted by newer predicted
+surface rays. `--visibility-tolerance .04` or `.08` sets the required range
+disagreement. Both are tested on validation before choosing whether to adopt an
+update. `--geometry-update shift_pos` and `shift_neg` are diagnostic controls
+that shift only the refiner's surfaces by ±10 cm along base x. They are not
+deployment settings. These options require deterministic clearance.
+
+```bash
+python3 scripts/run_geometry_study.py \
+  --root /run/user/1016/experiments/geometry-grounding-reproduction \
+  --gpus 0,1,2,3,4
+```
+
+Artifacts are in `/run/user/1016/experiments/gtsn_geometry_grounding_20261003/`.
+The protocol records the two visibility candidates and selection rule before
+rollouts. All previous results remain archived. `src/tsn/cli/geometry_figure.py`
+can reconstruct an archived observation and visualize the actual RGB-predicted
+field and its hand-motion query; it checks that the illustrated action choice
+matches the saved execution.
+
+The calibration stage additionally tests a global metric translation fitted on
+training geometry and the frozen head's existing pooled mean correction:
+
+```bash
+python3 scripts/docker_run.py --cpu calibrate_geometry \
+  --checkpoint /run/user/1016/experiments/gtsn_simplification_20261003/simplified.pt \
+  --cache /run/user/1016/experiments/gtsn_simplification_20261003/cache \
+  --output-dir /run/user/1016/experiments/geometry-calibration-reproduction
+python3 scripts/run_geometry_study.py --stage calibration \
+  --calibration /run/user/1016/experiments/geometry-calibration-reproduction/calibration.json \
+  --root /run/user/1016/experiments/geometry-calibrated-reproduction --gpus 0,1
+```
+
+For single evaluations, use `--geometry-update calibrated` with
+`--geometry-calibration PATH`, or `--geometry-update pooled_mean`. The story
+reports whether these updates actually improve navigation; a geometric fit alone
+is not used as evidence of a closed-loop improvement.
+
+All 900 follow-up rollouts are complete. Visibility pruning ties the original
+85% validation result. The training-fitted translation scores 84%; the learned
+mean correction is selected at 86% validation, then scores 82% on test. The
+established field remains reported at 85%/83%, and the mean-corrected extension
+at 86%/82%; the extension is not a new best test result. The complete geometry
+study includes the ±10 cm interventions, cached geometric-error measurements,
+paired intervals, actual-field figures, and 37 passing regression tests.
 
 An unsuccessful learned residual-retrieval experiment is retained separately in
 `runs/evidence_20261003/`. All five fifteen-epoch fits selected the unchanged

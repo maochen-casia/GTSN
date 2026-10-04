@@ -27,6 +27,9 @@ def main():
     parser.add_argument('--clearance-penalty', type=float, default=.15)
     parser.add_argument('--clearance-trigger', type=float, default=0.)
     parser.add_argument('--body-clearance', action='store_true')
+    parser.add_argument('--geometry-update', choices=('visibility', 'shift_pos', 'shift_neg', 'calibrated', 'pooled_mean'))
+    parser.add_argument('--visibility-tolerance', type=float, default=.04)
+    parser.add_argument('--geometry-calibration', type=Path)
     args = parser.parse_args()
     if args.clearance_margin <= 0 or args.clearance_uncertainty < 0 or args.clearance_penalty < 0:
         parser.error('Clearance margin must be positive; uncertainty and penalty must be nonnegative')
@@ -34,6 +37,16 @@ def main():
         parser.error('A clearance trigger in [0, 1] requires --clearance-mode')
     if args.body_clearance and (not args.clearance_mode or args.clearance_trigger):
         parser.error('Body clearance requires --clearance-mode and cannot use the hand-only trigger')
+    if args.geometry_update and (args.clearance_mode != 'deterministic' or args.body_clearance or args.clearance_trigger):
+        parser.error('Geometry interventions require deterministic clearance without body/trigger variants')
+    if args.visibility_tolerance <= 0:
+        parser.error('Visibility tolerance must be positive')
+    if (args.geometry_update == 'calibrated') != (args.geometry_calibration is not None):
+        parser.error('Calibrated geometry requires --geometry-calibration; other modes do not use it')
+    geometry_calibration = read_json(args.geometry_calibration) if args.geometry_calibration else None
+    if geometry_calibration and (geometry_calibration['fit_partition'] != 'train' or
+            Path(geometry_calibration['checkpoint']).resolve() != args.checkpoint.resolve()):
+        parser.error('Geometry calibration must be fitted on training data for this checkpoint')
     output = output_path(args.output_dir)
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         parser.error('Output directory already exists; use a new directory')
@@ -42,7 +55,13 @@ def main():
     policy, maps, checkpoint = load_compact_policy(args.checkpoint, device)
     if args.clearance_mode:
         from tsn.models.clearance_policy import ClearancePolicy
-        if args.body_clearance:
+        if args.geometry_update:
+            from functools import partial
+            from tsn.models.grounded_geometry import GroundedGeometryPolicy
+            constructor = partial(GroundedGeometryPolicy, geometry_update=args.geometry_update,
+                                  visibility_tolerance=args.visibility_tolerance,
+                                  translation_m=geometry_calibration['translation_m'] if geometry_calibration else None)
+        elif args.body_clearance:
             from tsn.models.body_clearance import BodyClearancePolicy
             constructor = BodyClearancePolicy
         elif args.clearance_trigger:
@@ -74,7 +93,10 @@ def main():
                full_partition=set(ids) == set(splits[args.partition]), variant=policy.schedule,
                clearance=dict(mode=args.clearance_mode, margin=args.clearance_margin,
                               uncertainty=args.clearance_uncertainty, penalty=args.clearance_penalty,
-                              trigger=args.clearance_trigger, body=args.body_clearance)))
+                              trigger=args.clearance_trigger, body=args.body_clearance,
+                              geometry_update=args.geometry_update,
+                              visibility_tolerance=args.visibility_tolerance,
+                              geometry_calibration=geometry_calibration)))
     evaluate_rollouts(ids, catalog, root, output, policy, maps, device, options)
     write_json(output / 'complete.json', dict(episodes=len(ids), partition=args.partition, variant=policy.schedule))
 
