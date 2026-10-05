@@ -1,4 +1,4 @@
-"""Learned route proposal and shared fixed-horizon control for hand clearance.
+"""Learned compact route policy and shared fixed-horizon robot control.
 
 Shape notation: B is batch size, T is observed history length (at most four
 in streaming control), and the 16 spatial cells form a pooled 4 x 4 grid.
@@ -138,6 +138,8 @@ class RouteController(nn.Module, ABC):
             None. Call before a new episode to prevent cross-episode memory.
         """
         self.history, self.step = [], 0
+        self.scene_memory = None
+        self.memory_step = None
 
     def observe_step(self, step):
         """Set the timestamp used when recording and ageing observations.
@@ -214,23 +216,35 @@ class RouteController(nn.Module, ABC):
 
         Notes:
             Streaming memory is for one episode (B=1); the head itself supports
-            batches. Appends detached features/pose and keeps four observations.
+            batches. Compact heads keep detached observation features. Persistent
+            heads carry fixed-size detached accumulators and no raw route history.
             Six route knots are interpolated into 30 positions. Within .08 m
             of the goal, a straight-line terminal servo replaces the route and
             holds current wrist orientation. Otherwise the backbone supplies
             orientation and IK seeds. Subclasses may refine positions before IK.
         """
         base, tokens, geom = self.perceive(rgb, state, K, pose)
-        self.history.append((tokens.detach(), geom.detach(), pose.detach(), self.step))
-        self.history = self.history[-self.history_length:]
+        persistent = hasattr(self.head, 'stream')
+        if not persistent:
+            self.history.append((tokens.detach(), geom.detach(), pose.detach(), self.step))
+            self.history = self.history[-getattr(self, 'route_history_length', self.history_length):]
         q = state[:, :7].float() * math.pi
         with torch.autocast(device_type=q.device.type, enabled=False):
             tcp = self.kinematics(q)
         goal = goal_xyz(state)
         near = (goal - tcp[:, :3, 3]).norm(dim=-1) < self.servo_radius
-        observations = [torch.stack([frame[i] for frame in self.history], 1) for i in range(3)]
-        ages = q.new_tensor([[self.step - frame[3] for frame in self.history]])
-        delta, _ = self.head(*observations, ages, torch.ones_like(ages, dtype=torch.bool), state, tcp)
+        if persistent:
+            elapsed = 0 if self.memory_step is None else self.step-self.memory_step
+            if elapsed < 0:
+                raise ValueError('Persistent memory timestamps must increase; reset between episodes')
+            delta, _, memory = self.head.stream(tokens, geom, pose, q.new_tensor([elapsed]), state, tcp,
+                                                getattr(self, 'current_points', None), self.scene_memory)
+            self.scene_memory = tuple(x.detach() for x in memory)
+            self.memory_step = self.step
+        else:
+            observations = [torch.stack([frame[i] for frame in self.history], 1) for i in range(3)]
+            ages = q.new_tensor([[self.step - frame[3] for frame in self.history]])
+            delta, _ = self.head(*observations, ages, torch.ones_like(ages, dtype=torch.bool), state, tcp)
         # Interpolate route knots at t=0,5,...,30 into a target for every control step.
         knots = torch.cat((torch.zeros_like(delta[:, :1]), delta), 1)
         times = torch.arange(1, 31, device=q.device) / 5
@@ -255,6 +269,48 @@ class RouteController(nn.Module, ABC):
         chunk = targets.reshape(-1, 30, 7) - q[:, None]
         # Preserve the exported controller's floating-point round trip.
         return (chunk + q[:, None]) - q[:, None]
+
+
+class CompactPolicy(RouteController):
+    """Execute the learned route directly, without geometric clearance repair.
+
+    Uses the same route interpolation, wrist proposal, IK, terminal servo and
+    observation cadence as RouteController. Only the detailed persistent head
+    requests dense predicted points; no clearance surface history is created.
+    """
+    schedule = 'fixed15_compact'
+
+    def reset_episode(self):
+        super().reset_episode()
+        self.current_points = None
+
+    def perceive(self, rgb, state, K, pose):
+        if len(state) != 1:
+            raise ValueError('Streaming compact controller expects one episode')
+        detailed = getattr(self.head, 'use_points', False) and hasattr(self.head, 'stream')
+        if detailed:
+            from tsn.models.persistent_policy import metric_points
+            action, tokens, geometry, dense = self.backbone(
+                rgb, state, K, pose, return_features=True, return_maps=True)
+            self.current_points = metric_points(dense)
+            return action, tokens, geometry
+        return self.backbone(rgb, state, K, pose, return_features=True)
+
+    def refine_waypoints(self, waypoints, rotation, tcp, near, pose):
+        """Identity: send the uncorrected route directly to inverse kinematics."""
+        return waypoints
+
+
+def load_compact_policy(path, device='cpu'):
+    """Load a compact or persistent head without instantiating clearance."""
+    backbone, head, kinematics, maps, checkpoint = load_route_components(path, device)
+    policy = CompactPolicy(backbone, head, kinematics)
+    if hasattr(head, 'stream'):
+        policy.schedule = 'fixed15_compact_' + checkpoint['variant']
+    elif checkpoint.get('route_history_length') == 1:
+        policy.route_history_length = 1
+        policy.schedule = 'fixed15_compact_current'
+    return policy.to(device).eval(), maps, checkpoint
 
 
 def compact_state(checkpoint, *, allow_training_source=False):
@@ -310,7 +366,11 @@ def load_route_components(path, device='cpu', *, allow_training_source=False):
             incompatible. State dict loading is strict for all loaded modules.
     """
     checkpoint = load_checkpoint(path)
-    backbone_state, head_state = compact_state(checkpoint, allow_training_source=allow_training_source)
+    persistent = checkpoint.get('architecture') == 'persistent_scene'
+    if persistent:
+        backbone_state, head_state = checkpoint['backbone'], checkpoint['head']
+    else:
+        backbone_state, head_state = compact_state(checkpoint, allow_training_source=allow_training_source)
     config = checkpoint['config']['model']
     if config['name'] != 'pi3_map_policy' or config['action_map_source'] != 'predicted' or config['chunk_size'] != 30:
         raise ValueError('Compact control requires the 30-step learned Pi3 backbone')
@@ -319,7 +379,11 @@ def load_route_components(path, device='cpu', *, allow_training_source=False):
         raise ValueError('Unexpected Pi3 geometry channel order')
     backbone = Pi3MapPolicy(config, initialize_backbone=False)
     backbone.load_state_dict(backbone_state, strict=True)
-    head = CompactRouteHead()
+    if persistent:
+        from tsn.models.persistent_policy import PersistentSceneHead
+        head = PersistentSceneHead(**checkpoint['memory_options'])
+    else:
+        head = CompactRouteHead()
     head.load_state_dict(head_state, strict=True)
     modules = (backbone, head, PandaKinematics(), GeometryMaps(config['maps']))
     return (*[module.to(device).eval() for module in modules], checkpoint)

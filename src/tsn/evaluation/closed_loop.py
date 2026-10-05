@@ -1,4 +1,4 @@
-"""Closed-loop validation and testing of deterministic RGB hand clearance."""
+"""Closed-loop validation and testing of RGB route controllers."""
 
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ from tsn.data.hdf5_dataset import validate_episode
 from tsn.evaluation.metrics import summarize_rollouts
 from tsn.features.maps import GeometryMaps
 from tsn.features.state import policy_state
-from tsn.models.clearance_policy import ClearancePolicy
+from tsn.models.compact_policy import RouteController
 from tsn.simulation.episode import EpisodeSimulation, orientation_error, quaternion_matrix
 
 
 @torch.inference_mode()
-def rollout(episode: str, route: str, root: Path, output: Path, model: ClearancePolicy,
+def rollout(episode: str, route: str, root: Path, output: Path, model: RouteController,
             maps: GeometryMaps, device: torch.device, options: dict[str, Any]) -> dict[str, Any]:
     """Execute live RGB predictions, reading only the initial expert robot state."""
     execute = int(options["execute_horizon"])
@@ -161,7 +161,7 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: Clearance
 
 
 def evaluate_rollouts(ids: list[str], catalog: dict[str, str], root: Path, output: Path,
-                      model: ClearancePolicy, maps: GeometryMaps, device: torch.device,
+                      model: RouteController, maps: GeometryMaps, device: torch.device,
                       options: dict[str, Any]) -> dict[str, Any]:
     """Run each selected episode once and persist partial summaries after every episode."""
     if not ids:

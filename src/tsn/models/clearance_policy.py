@@ -43,6 +43,7 @@ class ClearancePolicy(RouteController):
         self.current_goal = None
         self.last_risk = 0.
         self.diagnostics = []
+        self.current_points = None
 
     def perceive(self, rgb, state, K, pose):
         """Extract route features and remember a 20 x 20 metric surface cloud.
@@ -56,6 +57,9 @@ class ClearancePolicy(RouteController):
             raise ValueError('Streaming clearance controller expects one episode')
         action, tokens, geometry, dense = self.backbone(
             rgb, state, K, pose, return_features=True, return_maps=True)
+        if hasattr(self.head, 'stream'):
+            from tsn.models.persistent_policy import metric_points
+            self.current_points = metric_points(dense)
         points = F.interpolate(dense[:, :3].float(), self.cloud_grid,
                                mode='nearest-exact').flatten(2).transpose(1, 2)
         # Preserve the saved controller's decode, including autocast rounding
@@ -143,4 +147,9 @@ def load_clearance_policy(path, device='cpu', *, margin=.04, penalty=.08,
     backbone, head, kinematics, maps, checkpoint = load_route_components(
         path, device, allow_training_source=allow_training_source)
     policy = ClearancePolicy(backbone, head, kinematics, margin=margin, penalty=penalty)
+    if hasattr(head, 'stream'):
+        policy.schedule = 'fixed15_persistent_' + checkpoint['variant']
+    elif checkpoint.get('route_history_length') == 1:
+        policy.route_history_length = 1
+        policy.schedule = 'fixed15_current_clearance_deterministic'
     return policy.to(device).eval(), maps, checkpoint
