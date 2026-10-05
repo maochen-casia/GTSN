@@ -8,7 +8,8 @@ import torch
 
 from tsn.common.config import create_output
 from tsn.data.history import build_history
-from tsn.models.compact_policy import CompactPolicy, CompactRouteHead, compact_state
+from tsn.models.clearance_policy import ClearancePolicy
+from tsn.models.compact_policy import CompactRouteHead, compact_state
 from tsn.models.kinematics import PandaKinematics
 from tsn.training.losses import geometry_nll
 from tsn.training.runner import FeatureCache, fit_head, sampling_weights
@@ -102,23 +103,27 @@ class CompactTests(unittest.TestCase):
     def test_controller_memory_resets_and_servo_reaches_goal(self):
         class Perception(torch.nn.Module):
             def forward(self, *args, **kwargs):
-                return torch.zeros(1, 30, 7), torch.zeros(1, 16, 768), torch.zeros(1, 16, 6)
+                return (torch.zeros(1, 30, 7), torch.zeros(1, 16, 768),
+                        torch.zeros(1, 16, 6), torch.full((1, 6, 20, 20), -10.))
         kin = PandaKinematics()
         q = torch.tensor([[0., .4, 0., -1.96, 0., 2.35, .78]])
         goal = kin(q)[:, :3, 3] + torch.tensor([[.02, -.01, .015]])
         state = torch.zeros(1, 16)
         state[:, :7] = q / torch.pi
         state[:, 9:12] = (goal - torch.tensor([.65, 0, .22])) / torch.tensor([.55, .55, .5])
-        model = CompactPolicy(Perception(), CompactRouteHead(), kin).eval()
+        model = ClearancePolicy(Perception(), CompactRouteHead(), kin).eval()
         with torch.inference_mode():
             for step in range(0, 90, 15):
                 model.observe_step(step)
                 chunk = model(torch.zeros(1, 1, 1, 3, dtype=torch.uint8), state, torch.eye(3)[None], torch.eye(4)[None])
                 self.assertLessEqual(len(model.history), 4)
+                self.assertLessEqual(len(model.clouds), 4)
         self.assertEqual(model.execution_horizon(30), 15)
         self.assertLess((kin(q + chunk[:, -1])[:, :3, 3] - goal).norm().item(), 1e-4)
         model.reset_episode()
         self.assertEqual(model.history, [])
+        self.assertEqual(model.clouds, [])
+        self.assertIsNone(model.current_goal)
         self.assertEqual(model.step, 0)
 
     def test_one_epoch_cache_training_selects_and_reloads_head(self):

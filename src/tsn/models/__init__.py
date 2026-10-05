@@ -1,1 +1,1 @@
-"""Single-memory compact policy and its Pi3 perception components."""
+"""Deterministic hand-clearance policy and its learned route components."""

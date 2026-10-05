@@ -41,12 +41,6 @@ def diagnostics(directory):
                 mean_correction_m=float(np.mean([x['correction_m'] for x in observations])),
                 mean_initial_risk=float(np.mean([x['risk'] for x in observations])),
                 mean_retained_points=float(np.mean([x['points'] for x in observations])))
-    if 'removed_history_points' in observations[0]:
-        removed = sum(x['removed_history_points'] for x in observations)
-        checked = sum(x['historical_valid_before'] for x in observations)
-        summary.update(removed_history_point_checks=removed, historical_valid_point_checks=checked,
-                       removed_fraction_of_history_checks=removed/checked if checked else None,
-                       mean_removed_history_points_per_observation=removed/len(observations))
     return summary
 
 
@@ -90,17 +84,11 @@ def main():
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     names = list(results)
-    friendly = {'baseline': 'Compact baseline', 'method': 'Route-preserving clearance',
-                'without_correction_penalty': 'No correction penalty',
-                'without_hand_extent': 'TCP only',
-                'without_surface_memory': 'Current surfaces only'}
-    friendly.update(visibility_004='Visibility update (4 cm)', visibility_008='Visibility update (8 cm)',
-                    shift_pos='Geometry shifted +10 cm', shift_neg='Geometry shifted −10 cm',
-                    calibrated='Training bias calibration', pooled_mean='Learned mean correction')
+    friendly = {'method': 'Deterministic hand clearance'}
     labels = [friendly.get(name, name) for name in names]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), constrained_layout=True)
     axes[0].barh(labels, [results[x]['overall']['success_rate']*100 for x in names], color='#237a98')
-    axes[0].axvline(reference['overall']['success_rate']*100, color='#d4773c', ls='--', label='Compact baseline')
+    axes[0].axvline(reference['overall']['success_rate']*100, color='#d4773c', ls='--', label='Reference')
     axes[0].set(xlim=(0, 100), xlabel='Success (%)', title='Fixed 100-episode split')
     axes[0].legend()
     x = np.arange(len(names))
@@ -125,14 +113,14 @@ def main():
                         (high, row), xytext=(5, 0), textcoords='offset points', va='center', fontsize=9)
         ax.axvline(0, color='#888888', ls='--')
         ax.set_yticks(range(len(compared)), [friendly.get(name, name) for name in compared])
-        ax.set(xlabel='Success difference from baseline (percentage points)',
+        ax.set(xlabel='Success difference from reference (percentage points)',
                title='Paired 95% bootstrap intervals: 100 shared episodes')
         lo, hi = ax.get_xlim()
         ax.set_xlim(lo, hi+max(10, (hi-lo)*.55))
         for suffix in ('png', 'pdf'):
             fig.savefig(args.output_dir/f'paired_effects.{suffix}', dpi=180)
         plt.close(fig)
-    candidate_name = args.candidate or next((name for name in ('method', 'full', 'full_p008') if name in raw), None)
+    candidate_name = args.candidate or ('method' if 'method' in raw else None)
     if candidate_name and candidate_name not in raw:
         raise ValueError(f'Unknown paired-figure candidate: {candidate_name}')
     if candidate_name:
@@ -160,7 +148,7 @@ def main():
                 axes[row, 1].add_patch(Polygon([[lo, center[2]-half[2]], [hi, center[2]-half[2]],
                                               [hi, center[2]+half[2]], [lo, center[2]+half[2]]],
                                              facecolor='#cccccc', edgecolor='#777777'))
-                for directory, name, color in [(args.reference, 'Baseline', '#cb6843'),
+                for directory, name, color in [(args.reference, 'Reference', '#cb6843'),
                                                (args.root/candidate_name, 'Clearance', '#237a98')]:
                     trace = np.load(directory/'episodes'/ep/'trajectory.npz')['T_B_E']
                     tcp, hand = trace[:, :3, 3], trace[:, :3, 3]-.05*trace[:, :3, 2]

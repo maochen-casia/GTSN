@@ -12,8 +12,7 @@ import torch
 
 from tsn.common.config import create_output, read_json, write_json
 from tsn.features.state import policy_state
-from tsn.models.clearance_policy import ClearancePolicy
-from tsn.models.compact_policy import load_compact_policy
+from tsn.models.clearance_policy import ClearancePolicy, load_clearance_policy
 from tsn.simulation.episode import EpisodeSimulation
 
 
@@ -37,7 +36,8 @@ def main():
     torch.set_num_threads(1)
     config = read_json(args.run/'config.json')
     cfg = config['clearance']
-    if cfg['mode'] != 'deterministic' or cfg.get('geometry_update'):
+    if (cfg['mode'] != 'deterministic' or cfg.get('geometry_update') or
+            cfg.get('body') or cfg.get('trigger')):
         raise ValueError('This illustration reconstructs the fixed-margin union-memory method')
     source = args.run/'episodes'/args.episode
     diagnostics = read_json(source/'policy_diagnostics.json')
@@ -47,9 +47,9 @@ def main():
     step = chosen['step']
     trace = np.load(source/'trajectory.npz')
     device = torch.device(args.device)
-    base, maps, _ = load_compact_policy(Path(config['checkpoint']), device)
+    base, maps, _ = load_clearance_policy(Path(config['checkpoint']), device)
     policy = IllustratedPolicy(base.backbone, base.head, base.kinematics,
-                               mode='deterministic', margin=cfg['margin'], penalty=cfg['penalty']).to(device).eval()
+                               margin=cfg['margin'], penalty=cfg['penalty']).to(device).eval()
     dataset = Path(config['dataset_root'])/args.episode
     with h5py.File(dataset/'episode.h5', 'r') as data:
         q0, ee0 = data['qpos'][0], data['ee_pose'][0]
@@ -79,7 +79,7 @@ def main():
     if actual['choice'] != chosen['choice']:
         raise ValueError('Illustrated correction does not reproduce the archived decision')
     points = torch.cat([c[0] for c in policy.clouds], 1)[0].cpu().numpy()
-    valid = torch.cat([c[2] for c in policy.clouds], 1)[0].cpu().numpy()
+    valid = torch.cat([c[1] for c in policy.clouds], 1)[0].cpu().numpy()
     valid &= np.linalg.norm(points-trace['T_B_E'][step, :3, 3], axis=-1) > .07
     ages = np.repeat([45, 30, 15, 0], 400)
     points, ages = points[valid], ages[valid]

@@ -18,7 +18,7 @@ from tsn.data.loaders import make_loader
 from tsn.data.recovery_dataset import RecoveryDataset
 from tsn.data.splits import episode_catalog, validate_splits
 from tsn.features.state import policy_state
-from tsn.models.compact_policy import load_compact_policy
+from tsn.models.clearance_policy import load_clearance_policy
 from tsn.training.losses import geometry_nll
 
 
@@ -187,7 +187,7 @@ def fit_head(head, training, validation, options, output, expert_samples):
 def train(checkpoint_path, output, options):
     device = require_device(options['device'])
     seed_everything(options['seed'])
-    model, maps, checkpoint = load_compact_policy(checkpoint_path, device, allow_training_source=True)
+    model, maps, checkpoint = load_clearance_policy(checkpoint_path, device, allow_training_source=True)
     config, splits = copy.deepcopy(checkpoint['config']), checkpoint['splits']
     recoveries = config['train'].get('recovery_sources', [])
     if len(recoveries) != 1:

@@ -1,4 +1,4 @@
-"""Single-memory route head and fixed-horizon compact controller.
+"""Learned route proposal and shared fixed-horizon control for hand clearance.
 
 Shape notation: B is batch size, T is observed history length (at most four
 in streaming control), and the 16 spatial cells form a pooled 4 x 4 grid.
@@ -8,6 +8,7 @@ The 16 state entries are seven arm angles / pi, two finger positions / .04 m,
 three normalized goal coordinates, and a unit goal quaternion in wxyz order.
 Point/goal XYZ uses centre (.65, 0, .22) m and scale (.55, .55, .50) m.
 """
+from abc import ABC, abstractmethod
 import math
 
 import torch
@@ -103,14 +104,13 @@ class CompactRouteHead(nn.Module):
         return out.float(), {'mean': mean[:, -1], 'logvar': logvar[:, -1]}
 
 
-class CompactPolicy(nn.Module):
-    """Predict 30 joint targets; execute 15 before observing the next RGB frame."""
+class RouteController(nn.Module, ABC):
+    """Shared route-to-joint execution; subclasses supply perception/refinement."""
     uses_predicted_maps = True
     chunk_size = 30
     history_length = 4
     execute = 15
     servo_radius = .08
-    schedule = 'fixed15_single_memory'
 
     def __init__(self, backbone, head, kinematics):
         """Assemble perception, route prediction, and robot kinematics.
@@ -161,6 +161,7 @@ class CompactPolicy(nn.Module):
         """
         return self.execute
 
+    @abstractmethod
     def perceive(self, rgb, state, K, pose):
         """Extract the action proposal and spatial features for one observation.
 
@@ -177,10 +178,11 @@ class CompactPolicy(nn.Module):
             CompactRouteHead.forward for channel meanings. CUDA perception
             uses autocast, so these tensors need not all be float32.
         """
-        return self.backbone(rgb, state, K, pose, return_features=True)
+        raise NotImplementedError
 
+    @abstractmethod
     def refine_waypoints(self, waypoints, rotation, tcp, near, pose):
-        """Provide the Cartesian refinement hook used by geometry extensions.
+        """Refine Cartesian targets before inverse kinematics.
 
         Args:
             waypoints (torch.Tensor): Floating base XYZ targets (B, 30, 3), m.
@@ -191,10 +193,9 @@ class CompactPolicy(nn.Module):
             pose (torch.Tensor): Floating camera-to-base poses (B, 4, 4).
 
         Returns:
-            torch.Tensor: The original ``waypoints`` object (B, 30, 3).
-            The base implementation leaves all targets unchanged.
+            torch.Tensor: Refined base-frame targets (B, 30, 3), metres.
         """
-        return waypoints
+        raise NotImplementedError
 
     def forward(self, rgb, state, K, pose):
         """Record an observation and produce an executable joint-target chunk.
@@ -290,8 +291,8 @@ def compact_state(checkpoint, *, allow_training_source=False):
     raise ValueError('Expected a single_memory compact checkpoint')
 
 
-def load_compact_policy(path, device='cpu', *, allow_training_source=False):
-    """Load a compact controller, map-supervision module, and saved metadata.
+def load_route_components(path, device='cpu', *, allow_training_source=False):
+    """Load the learned proposal, kinematics, supervision maps, and metadata.
 
     Args:
         path (str | pathlib.Path): Path to a serialized project checkpoint.
@@ -300,25 +301,15 @@ def load_compact_policy(path, device='cpu', *, allow_training_source=False):
             initialization from an earlier training checkpoint.
 
     Returns:
-        tuple[CompactPolicy, GeometryMaps, dict[str, object]]: Loaded policy
-        in evaluation mode, depth-based supervision map generator, and raw
-        checkpoint metadata. Evidence exports recursively load their base
-        checkpoint and replace its head with EvidenceRouteHead; metadata is
-        merged with the evidence checkpoint taking precedence.
+        tuple: Pi3 backbone, memory head, Panda kinematics, depth-based
+        supervision map generator, and checkpoint metadata. All modules
+        use the requested device and evaluation mode.
 
     Raises:
         ValueError: Architecture, horizon, map source, or channel order is
             incompatible. State dict loading is strict for all loaded modules.
     """
     checkpoint = load_checkpoint(path)
-    if checkpoint.get('architecture') == 'route_evidence':
-        from tsn.models.evidence_policy import EvidenceRouteHead
-        policy, maps, source = load_compact_policy(checkpoint['base_checkpoint'], device)
-        head = EvidenceRouteHead(policy.head, **checkpoint['head_config'])
-        head.load_state_dict(checkpoint['head'], strict=True)
-        policy.head = head.to(device).eval()
-        policy.schedule = 'fixed15_route_evidence_' + head.variant
-        return policy, maps, {**source, **checkpoint}
     backbone_state, head_state = compact_state(checkpoint, allow_training_source=allow_training_source)
     config = checkpoint['config']['model']
     if config['name'] != 'pi3_map_policy' or config['action_map_source'] != 'predicted' or config['chunk_size'] != 30:
@@ -330,5 +321,5 @@ def load_compact_policy(path, device='cpu', *, allow_training_source=False):
     backbone.load_state_dict(backbone_state, strict=True)
     head = CompactRouteHead()
     head.load_state_dict(head_state, strict=True)
-    policy = CompactPolicy(backbone, head, PandaKinematics()).to(device).eval()
-    return policy, GeometryMaps(config['maps']).to(device), checkpoint
+    modules = (backbone, head, PandaKinematics(), GeometryMaps(config['maps']))
+    return (*[module.to(device).eval() for module in modules], checkpoint)

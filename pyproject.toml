@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gtsn-compact"
 version = "0.1.0"
-description = "Single-memory compact RGB navigation policy for tsn-1k"
+description = "Deterministic RGB hand-clearance navigation policy for tsn-1k"
 requires-python = ">=3.10"
 dependencies = [
   "torch==2.6.0", "numpy==1.26.4", "h5py==3.14.0",

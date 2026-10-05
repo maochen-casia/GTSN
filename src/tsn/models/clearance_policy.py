@@ -1,177 +1,146 @@
-"""Preserve a learned route while refining clearance against remembered surfaces.
+"""Deterministic hand clearance against four remembered RGB surface clouds.
 
-The revised research configuration uses deterministic mode, a .04 m proximity
-scale, and correction penalty .08. Uncertainty inflation remains available for
-the original study and its controls; it is not part of the revised method.
+The frozen learned route supplies the proposal. Fourteen bounded corrections
+are scored using a fixed Gaussian proximity scale and a correction penalty.
+The score is a geometric heuristic, not a collision probability.
 """
+import math
+
 import torch
 from torch.nn import functional as F
 
-from tsn.models.compact_policy import CompactPolicy, goal_xyz
+from tsn.models.compact_policy import RouteController, goal_xyz, load_route_components
 
 
-class ClearancePolicy(CompactPolicy):
-    """Score bounded route corrections against up to four predicted point clouds.
+class ClearancePolicy(RouteController):
+    """Refine a learned route using three samples along the hand axis.
 
-    This streaming extension requires batch size one. Each cloud stores base
-    XYZ (1, 400, 3) in metres, scalar uncertainty (1, 400) in metres, and a
-    boolean workspace-valid mask (1, 400). Geometry is detached from autograd.
+    Streaming control accepts one episode. Each remembered cloud contains
+    detached base-frame XYZ (1, 400, 3), metres, and validity (1, 400).
     """
-    def __init__(self, backbone, head, kinematics, mode='full', margin=.04, uncertainty=.5, penalty=.15):
-        """Configure surface memory and the cost of correcting a learned route.
+    schedule = 'fixed15_clearance_deterministic'
+    cloud_grid = (20, 20)
+    hand_lengths = (0., .05, .10)
+    correction_coordinates = (
+        (0, 0), (-.015, 0), (.015, 0), (-.03, 0), (.03, 0),
+        (-.05, 0), (.05, 0), (0, .02), (0, .04), (0, .06),
+        (-.03, .03), (.03, .03), (-.05, .04), (.05, .04),
+    )
 
-        Args:
-            backbone (Pi3MapPolicy): Perception supporting features/dense maps.
-            head (CompactRouteHead): Route head exposing visual/distribution
-                layers for estimating pooled point uncertainty.
-            kinematics (PandaKinematics): Robot forward/inverse kinematics.
-            mode (str): 'full' uses memory and uncertainty; 'deterministic'
-                removes uncertainty inflation; 'current' keeps one cloud;
-                'tcp' queries only the TCP instead of three hand samples.
-            margin (float): Positive base Gaussian proximity scale in metres.
-            uncertainty (float): Multiplier of predicted metric uncertainty.
-            penalty (float): Weight on squared correction length / .05 m.
-
-        Returns:
-            None. Initializes inherited observation memory and cloud diagnostics.
-
-        Raises:
-            ValueError: The requested mode is unknown.
-        """
-        if mode not in ('full', 'deterministic', 'current', 'tcp'):
-            raise ValueError(mode)
-        self.mode, self.margin, self.uncertainty, self.penalty = mode, margin, uncertainty, penalty
+    def __init__(self, backbone, head, kinematics, *, margin=.04, penalty=.08):
+        """Use a positive proximity scale (metres) and nonnegative penalty."""
+        if not math.isfinite(margin) or margin <= 0:
+            raise ValueError('Clearance margin must be finite and positive')
+        if not math.isfinite(penalty) or penalty < 0:
+            raise ValueError('Clearance penalty must be finite and nonnegative')
         super().__init__(backbone, head, kinematics)
-        self.schedule = 'fixed15_clearance_' + mode
+        self.margin, self.penalty = margin, penalty
 
     def reset_episode(self):
-        """Reset observation/cloud memory and clearance diagnostics.
-
-        Args:
-            None.
-
-        Returns:
-            None. Clears clouds and diagnostics, sets last_risk and step to zero.
-        """
+        """Clear observation/surface memory and diagnostics before an episode."""
         super().reset_episode()
         self.clouds = []
+        self.current_goal = None
         self.last_risk = 0.
         self.diagnostics = []
 
     def perceive(self, rgb, state, K, pose):
-        """Predict features and append a metric surface cloud for refinement.
+        """Extract route features and remember a 20 x 20 metric surface cloud.
 
-        Args:
-            rgb (torch.Tensor): Uint8 RGB (1, H, W, 3), values 0..255.
-            state (torch.Tensor): Floating normalized policy state (1, 16);
-                layout follows CompactPolicy's module docstring.
-            K (torch.Tensor): Floating intrinsics (1, 3, 3), sensor pixels.
-            pose (torch.Tensor): Floating camera-to-base transform (1, 4, 4).
-
-        Returns:
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Floating action
-            offsets (1, 30, 7), radians; pooled tokens (1, 16, 768); and pooled
-            geometry (1, 16, 6), in normalized XYZ / projected goal / visible
-            goal / future-action order. Dtypes follow backbone autocast.
-
-        Notes:
-            Stores detached float32 points (1, 400, 3), uncertainty (1, 400),
-            and boolean validity (1, 400) from a 20 x 20 grid. Uncertainty is
-            the RMS metric coordinate standard deviation, capped at .08 m.
-            Also updates current_goal (1, 3), metres. Keeps one cloud in
-            'current' mode and at most four otherwise.
-
-        Raises:
-            ValueError: The input contains more or fewer than one episode.
+        Inputs are RGB (1, H, W, 3), normalized state (1, 16), intrinsics
+        (1, 3, 3), and camera-to-base pose (1, 4, 4). Returns joint offsets
+        (1, 30, 7), pooled tokens (1, 16, 768), and maps (1, 16, 6).
+        Only predicted XYZ and a workspace mask enter the clearance memory.
         """
-        action, tokens, geometry, dense = self.backbone(rgb, state, K, pose,
-                                                       return_features=True, return_maps=True)
         if len(state) != 1:
             raise ValueError('Streaming clearance controller expects one episode')
-        raw = self.head.distribution(self.head.visual(tokens.float())).float()
-        std = (-5+4*raw[..., 3:].tanh()).exp().sqrt()
-        # Distributions describe pooled cells. They are used as a heuristic
-        # localization margin, never a calibrated dense collision probability.
+        action, tokens, geometry, dense = self.backbone(
+            rgb, state, K, pose, return_features=True, return_maps=True)
+        points = F.interpolate(dense[:, :3].float(), self.cloud_grid,
+                               mode='nearest-exact').flatten(2).transpose(1, 2)
+        # Preserve the saved controller's decode, including autocast rounding
+        # of constants to the dense map dtype before converting to float32.
         scale = dense.new_tensor([.55, .55, .5]).float()
         center = dense.new_tensor([.65, 0, .22]).float()
-        points = F.interpolate(dense[:, :3].float(), (20, 20), mode='nearest-exact').flatten(2).transpose(1, 2)
-        points = points*scale + center
-        sigma = F.interpolate(std.transpose(1, 2).reshape(1, 3, 4, 4), (20, 20), mode='nearest-exact')
-        sigma = (sigma.flatten(2).transpose(1, 2)*scale).square().mean(-1).sqrt().clamp(max=.08)
+        points = points * scale + center
         valid = ((points[..., 0] > .10) & (points[..., 0] < 1.05) &
                  (points[..., 1].abs() < .60) & (points[..., 2] > .04) & (points[..., 2] < .65))
-        self.clouds.append((points.detach(), sigma.detach(), valid.detach()))
-        self.clouds = self.clouds[-(1 if self.mode == 'current' else 4):]
+        self.clouds.append((points.detach(), valid.detach()))
+        self.clouds = self.clouds[-self.history_length:]
         self.current_goal = goal_xyz(state)
         return action, tokens, geometry
 
-    def refine_waypoints(self, waypoints, rotation, tcp, near, pose):
-        """Choose one of 14 bounded route corrections using remembered surfaces.
+    def route_candidates(self, waypoints, tcp):
+        """Generate side/up corrections, ramped along the route and goal-faded.
 
-        Args:
-            waypoints (torch.Tensor): Floating base XYZ targets (1, 30, 3), m.
-            rotation (torch.Tensor): Floating target TCP-to-base rotations
-                (1, 30, 3, 3), used to place hand samples behind each TCP.
-            tcp (torch.Tensor): Floating current TCP-to-base pose (1, 4, 4).
-            near (torch.Tensor): Boolean servo flag (1,), accepted for the
-                parent hook; fading here uses metric goal distance instead.
-            pose (torch.Tensor): Floating camera-to-base pose (1, 4, 4),
-                accepted for the parent hook and unused here.
-
-        Returns:
-            torch.Tensor: Selected floating base-frame waypoints (1, 30, 3),
-            metres, on the input device. The zero-offset candidate preserves
-            the proposal exactly. Corrections fade to zero within .025 m of
-            the goal and reach full strength at .08 m.
-
-        Notes:
-            Requires clouds/current_goal from perceive. Evaluates steps
-            3, 6, 9, 12, 15 of each candidate with one or three hand samples.
-            Updates last_risk with the ORIGINAL candidate's proximity score
-            and appends the selected correction to diagnostics. The score is
-            a Gaussian proximity heuristic, not a collision probability.
+        Returns candidates (1, 14, 30, 3), offsets (14, 3), and fade (1,).
+        Candidate zero preserves the proposal exactly. Corrections vanish
+        within .025 m of the goal and reach full strength at .08 m.
         """
-        points, sigma, valid = [torch.cat([x[i] for x in self.clouds], 1) for i in range(3)]
-        # Suppress potential robot/self points close to the measured TCP. This
-        # is deliberately only an approximate mask; no simulator segmentation.
-        valid = valid & ((points-tcp[:, None, :3, 3]).norm(dim=-1) > .07)
-        goal_delta = self.current_goal-tcp[:, :3, 3]
+        goal_delta = self.current_goal - tcp[:, :3, 3]
         direction = goal_delta.clone()
         direction[:, 2] = 0
-        direction = direction/direction.norm(dim=-1, keepdim=True).clamp_min(.01)
+        direction = direction / direction.norm(dim=-1, keepdim=True).clamp_min(.01)
         side = torch.stack((-direction[:, 1], direction[:, 0], torch.zeros_like(direction[:, 0])), -1)
         up = torch.zeros_like(side)
         up[:, 2] = 1
-        coordinates = waypoints.new_tensor([(0, 0), (-.015, 0), (.015, 0), (-.03, 0), (.03, 0),
-                      (-.05, 0), (.05, 0), (0, .02), (0, .04), (0, .06),
-                      (-.03, .03), (.03, .03), (-.05, .04), (.05, .04)])
-        offsets = coordinates[:, :1]*side + coordinates[:, 1:]*up
-        # Smoothly ramp the correction from the observed pose. Replanning still
-        # occurs every fifteen steps, using the same thirty-step prediction.
-        ramp = torch.linspace(1/30, 1, 30, device=waypoints.device).sin()*1.1883951
-        fade = ((goal_delta.norm(dim=-1)-.025)/.055).clamp(0, 1)
-        candidates = waypoints[:, None] + offsets[None, :, None]*ramp[None, None, :, None]*fade[:, None, None, None]
-        # Candidate axis C=14; body has shape (1, C, 30, S, 3), S=1 or 3.
-        # Approximate the hand by three samples on its axis behind the TCP.
-        # This queries body clearance rather than end-effector position alone.
-        lengths = [0.] if self.mode == 'tcp' else [0., .05, .10]
-        body = torch.stack([candidates - rotation[:, None, :, :, 2]*length for length in lengths], -2)
-        sampled = body[:, :, 2:15:3]
-        distances = (sampled[..., None, :]-points[:, None, None, None]).square().sum(-1)
-        # Distances (1, C, 5, S, P) compare sampled hand positions with all
-        # P remembered surface points without materializing repeated clouds.
-        inflation = 0. if self.mode == 'deterministic' else self.uncertainty*sigma
-        radius = self.margin+inflation
-        if not isinstance(radius, torch.Tensor):
-            radius = torch.full_like(sigma, radius)
-        proximity = (-.5*distances/radius[:, None, None, None].square()).exp()
+        coordinates = waypoints.new_tensor(self.correction_coordinates)
+        offsets = coordinates[:, :1] * side + coordinates[:, 1:] * up
+        ramp = torch.linspace(1/30, 1, 30, device=waypoints.device).sin() * 1.1883951
+        fade = ((goal_delta.norm(dim=-1) - .025) / .055).clamp(0, 1)
+        candidates = (waypoints[:, None] + offsets[None, :, None] *
+                      ramp[None, None, :, None] * fade[:, None, None, None])
+        return candidates, offsets, fade
+
+    def hand_proximity(self, candidates, rotation, tcp):
+        """Score swept-hand proximity at steps 3, 6, 9, 12, 15 of each route.
+
+        Three axial samples (TCP, .05 m, .10 m behind it) query remembered
+        surfaces. Suppress points within .07 m of the measured TCP as an
+        approximate self mask. Returns risk (1, 14) and valid point count.
+        """
+        points = torch.cat([cloud[0] for cloud in self.clouds], 1)
+        valid = torch.cat([cloud[1] for cloud in self.clouds], 1)
+        valid = valid & ((points - tcp[:, None, :3, 3]).norm(dim=-1) > .07)
+        hand = torch.stack([candidates - rotation[:, None, :, :, 2] * length
+                            for length in self.hand_lengths], -2)
+        sampled = hand[:, :, 2:15:3]
+        # (batch, candidate, step, hand sample, remembered point).
+        distances = (sampled[..., None, :] - points[:, None, None, None]).square().sum(-1)
+        radius = points.new_tensor(self.margin)
+        proximity = (-.5 * distances / radius.square()).exp()
         proximity = proximity.masked_fill(~valid[:, None, None, None], 0)
-        # Worst observed surface point, then average over the swept hand.
         risk = proximity.amax(-1).mean((-1, -2))
-        cost = risk + self.penalty*(offsets.norm(dim=-1)/.05).square()[None]
+        return risk, int(valid.sum())
+
+    def refine_waypoints(self, waypoints, rotation, tcp, near, pose):
+        """Select the lowest proximity-plus-correction cost before joint IK.
+
+        Waypoints (1, 30, 3), rotations (1, 30, 3, 3), and TCP (1, 4, 4)
+        use the base frame. The controller hook also passes the terminal-servo
+        flag and camera pose; fading uses metric goal distance instead.
+        Diagnostics retain the proposal's risk and the selected correction.
+        """
+        candidates, offsets, fade = self.route_candidates(waypoints, tcp)
+        risk, points = self.hand_proximity(candidates, rotation, tcp)
+        cost = risk + self.penalty * (offsets.norm(dim=-1) / .05).square()[None]
         chosen = cost.argmin(-1)
         self.last_risk = float(risk[0, 0])
-        self.diagnostics.append(dict(step=self.step, risk=self.last_risk, choice=int(chosen[0]),
-                                    correction_m=float(offsets[chosen[0]].norm()*fade[0]),
-                                    points=int(valid.sum())))
+        self.diagnostics.append(dict(
+            step=self.step, risk=self.last_risk, choice=int(chosen[0]),
+            correction_m=float(offsets[chosen[0]].norm() * fade[0]), points=points))
         return candidates[torch.arange(len(waypoints), device=waypoints.device), chosen]
+
+
+def load_clearance_policy(path, device='cpu', *, margin=.04, penalty=.08,
+                          allow_training_source=False):
+    """Load deterministic hand clearance from the existing learned checkpoint.
+
+    Returns the evaluation policy, depth-based training supervision maps, and
+    saved metadata. Depth maps are never inputs to the deployed policy.
+    Earlier memory-branch checkpoints may initialize training when requested.
+    """
+    backbone, head, kinematics, maps, checkpoint = load_route_components(
+        path, device, allow_training_source=allow_training_source)
+    policy = ClearancePolicy(backbone, head, kinematics, margin=margin, penalty=penalty)
+    return policy.to(device).eval(), maps, checkpoint
