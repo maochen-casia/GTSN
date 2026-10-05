@@ -10,17 +10,56 @@ from tsn.models.clearance_policy import ClearancePolicy
 
 
 class BodyClearancePolicy(ClearancePolicy):
+    """Select a joint realization using ten arm/hand proxy points (one episode)."""
     def __init__(self, *args, **kwargs):
+        """Initialize the body-scoring extension of the clearance controller.
+
+        Args:
+            *args (tuple): Positional ClearancePolicy arguments: backbone
+                (Pi3MapPolicy), head (CompactRouteHead), kinematics
+                (PandaKinematics), and optional mode/scale/cost settings.
+            **kwargs (dict[str, object]): Named ClearancePolicy arguments;
+                margin is metres, uncertainty and penalty are scalar weights.
+
+        Returns:
+            None. Initializes inherited memory and the body-clearance schedule.
+        """
         super().__init__(*args, **kwargs)
         self.schedule = 'fixed15_body_clearance_' + self.mode
 
     def refine_waypoints(self, waypoints, rotation, tcp, near, pose):
+        """Cache Cartesian targets for body scoring after the baseline IK solve.
+
+        Args:
+            waypoints (torch.Tensor): Floating base XYZ targets (1, 30, 3), m.
+            rotation (torch.Tensor): Floating TCP-to-base rotations
+                (1, 30, 3, 3), one per target.
+            tcp (torch.Tensor): Floating current TCP-to-base pose (1, 4, 4).
+            near (torch.Tensor): Boolean servo mask (1,), unused by this hook.
+            pose (torch.Tensor): Floating camera-to-base pose (1, 4, 4), unused.
+
+        Returns:
+            torch.Tensor: Original waypoints (1, 30, 3). Stores references to
+            waypoints, rotation, and tcp for choose_realization to use later.
+        """
         self.proposed_waypoints = waypoints
         self.proposed_rotation = rotation
         self.current_tcp = tcp
         return waypoints
 
     def body_points(self, q):
+        """Compute ten kinematic proxy positions for the moving arm and hand.
+
+        Args:
+            q (torch.Tensor): Float32 joint angles (..., 7), radians, on the
+                kinematics device. Leading batch/candidate/time axes are kept.
+
+        Returns:
+            torch.Tensor: Floating base-frame points (..., 10, 3), metres.
+            Indices 0:4 are revolute joint origins 4..7; 4:7 are the three
+            adjacent midpoints; 7:10 are the TCP and positions .05/.10 m behind
+            it along its local z axis. These are proxies, not mesh vertices.
+        """
         kin = self.kinematics
         transform = torch.eye(4, device=q.device).expand(*q.shape[:-1], 4, 4).clone()
         joints = []
@@ -39,11 +78,45 @@ class BodyClearancePolicy(ClearancePolicy):
         return torch.stack(points, -2)
 
     def forward(self, rgb, state, K, pose):
+        """Generate a baseline chunk and select its body-aware joint realization.
+
+        Args:
+            rgb (torch.Tensor): Uint8 RGB (1, H, W, 3), values 0..255.
+            state (torch.Tensor): Floating normalized policy state (1, 16),
+                using the CompactPolicy state layout.
+            K (torch.Tensor): Floating sensor intrinsics (1, 3, 3), pixels.
+            pose (torch.Tensor): Floating camera-to-base transform (1, 4, 4).
+
+        Returns:
+            torch.Tensor: Float32 joint offsets (1, 30, 7), radians from the
+            same measured joints. Updates observation/cloud memory and caches
+            the proposal; scoring and IK run with autocast disabled.
+        """
         original = super().forward(rgb, state, K, pose)
         with torch.autocast(device_type=state.device.type, enabled=False):
             return self.choose_realization(original, state)
 
     def choose_realization(self, original, state):
+        """Score 14 route choices and two alternative posture seeds after IK.
+
+        Args:
+            original (torch.Tensor): Floating baseline offsets (1, 30, 7),
+                radians relative to the currently measured arm configuration.
+            state (torch.Tensor): Floating normalized policy state (1, 16);
+                the first seven entries give current joints divided by pi.
+
+        Returns:
+            torch.Tensor: Selected offsets (1, 30, 7), radians. Returns the
+            original object if no valid surfaces remain or baseline wins;
+            otherwise returns float32 offsets for the selected IK solution.
+
+        Notes:
+            Requires cached targets/TCP from refine_waypoints and clouds/goal
+            from perceive. This method supports B=1. Samples five steps in the
+            next 15 controls, rejects surface points near the current body,
+            and penalizes correction size and Cartesian IK error. Records
+            original-candidate risk and selection details in diagnostics.
+        """
         q = state[:, :7].float()*torch.pi
         baseline = original.float()+q[:, None]
         waypoints, rotation, tcp = self.proposed_waypoints, self.proposed_rotation, self.current_tcp
@@ -69,6 +142,8 @@ class BodyClearancePolicy(ClearancePolicy):
         candidates = self.kinematics.inverse(initial.reshape(-1, 7), targets.reshape(-1, 3),
                                               rotations.reshape(-1, 3, 3)).reshape(1, 16, 30, 7)
         candidates[:, 0] = baseline
+        # Keep candidate zero bit-for-bit equal to the original joint targets;
+        # the other candidates have been re-solved with displaced routes/seeds.
         sample = candidates[:, :, 2:15:3]
         body = self.body_points(sample)
         points, sigma, valid = [torch.cat([x[i] for x in self.clouds], 1) for i in range(3)]
@@ -81,6 +156,7 @@ class BodyClearancePolicy(ClearancePolicy):
                         joint_correction_rad=0., posture_only=False, points=0))
             return original
         distances = (body[..., None, :]-points[:, None, None, None]).square().sum(-1)
+        # Shape (1, 16 candidates, 5 times, 10 body samples, P surface points).
         inflation = torch.zeros_like(sigma) if self.mode == 'deterministic' else self.uncertainty*sigma
         # Known robot-body proxy sizes, not environment-specific scene geometry.
         radii = q.new_tensor([.055]*7+[self.margin]*3)

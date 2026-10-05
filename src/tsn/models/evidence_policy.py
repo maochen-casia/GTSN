@@ -14,9 +14,30 @@ from tsn.models.compact_policy import CompactRouteHead, goal_xyz
 
 
 class EvidenceRouteHead(nn.Module):
+    """Add a learned bounded residual to a frozen six-knot route proposal."""
     variants = ('full', 'deterministic', 'current', 'global', 'residual')
 
     def __init__(self, base=None, variant='full', radius=.12, correction=.06):
+        """Create the retrieval head and freeze its underlying route proposer.
+
+        Args:
+            base (CompactRouteHead | None): Existing route head; None creates
+                one. Its parameters are frozen, including when supplied here.
+            variant (str): 'full' uses uncertain local retrieval; 'deterministic'
+                zeros variance; 'current' retrieves only the last frame;
+                'global' removes spatial offsets/proximity; 'residual' removes
+                retrieved features and support signals from the residual head.
+            radius (float): Positive Gaussian retrieval radius in metres.
+            correction (float): Per-coordinate residual bound in metres.
+
+        Returns:
+            None. Initializes the residual output to zero so initial routes
+            match the base exactly. variance_scale is a three-coordinate
+            dimensionless buffer multiplying predicted normalized variance.
+
+        Raises:
+            ValueError: The variant is unknown.
+        """
         super().__init__()
         if variant not in self.variants:
             raise ValueError(f'Unknown evidence variant: {variant}')
@@ -35,17 +56,69 @@ class EvidenceRouteHead(nn.Module):
         nn.init.zeros_(self.output[-1].bias)
 
     def train(self, mode=True):
+        """Set residual-head training mode while keeping the proposal in eval.
+
+        Args:
+            mode (bool): True enables training for the trainable head layers.
+
+        Returns:
+            EvidenceRouteHead: This instance, for normal nn.Module chaining.
+            The base is always set to evaluation mode by this call.
+        """
         super().train(mode)
         self.base.eval()
         return self
 
     @staticmethod
     def expected_proximity(offset, variance, radius):
-        """E[exp(-||X-query||²/(2 r²))] for a diagonal Gaussian X."""
+        """Return log E[exp(-||X-query||²/(2 r²))] for a diagonal Gaussian X.
+
+        Args:
+            offset (torch.Tensor): Floating mean-minus-query offsets (..., 3), m.
+            variance (torch.Tensor): Nonnegative floating diagonal variances
+                (..., 3), m²; must broadcast with offset.
+            radius (float): Positive Gaussian kernel radius r, metres.
+
+        Returns:
+            torch.Tensor: Floating log expected proximity (...,), reducing the
+            final XYZ dimension after broadcasting. Exponentiating gives a
+            kernel value in (0, 1], subject to floating-point underflow.
+        """
         total = radius**2 + variance
         return -.5 * (offset.square()/total + torch.log(total/radius**2)).sum(-1)
 
     def forward(self, tokens, geometry, poses, ages, mask, state, tcp):
+        """Retrieve scene evidence near each proposal knot and predict a residual.
+
+        Args:
+            tokens (torch.Tensor): Floating Pi3 features (B, T, 16, 768),
+                ordered oldest to newest over T observed/padded frames.
+            geometry (torch.Tensor): Floating maps (B, T, 16, 6): normalized
+                base XYZ, projected goal, visible goal, future-action score.
+            poses (torch.Tensor): Floating camera-to-base poses (B, T, 4, 4),
+                with translations in metres.
+            ages (torch.Tensor): Numeric observation ages (B, T), control steps.
+            mask (torch.Tensor): Boolean frame validity (B, T), with at least
+                one valid frame per sample for the base head's attention.
+            state (torch.Tensor): Floating normalized policy state (B, 16),
+                following CompactRouteHead's state convention.
+            tcp (torch.Tensor): Floating current TCP-to-base poses (B, 4, 4).
+
+        Returns:
+            tuple[torch.Tensor, dict[str, torch.Tensor]]: Float32 corrected
+            offsets (B, 6, 3), base-frame metres from the current TCP at steps
+            5, 10, ..., 30. Auxiliary 'mean'/'logvar' are (B, 16, 3) normalized
+            point means/log variances from the last frame of the frozen base;
+            'support' and 'past_mass' are detached floating (B, 6, 1) attention
+            masses on all real evidence and on past frames, respectively;
+            'correction' is detached floating (B, 6, 3), metres. In 'residual'
+            mode both returned attention masses are zeroed ablation signals.
+
+        Notes:
+            The base proposal and point distributions run without gradients.
+            A null token absorbs unsupported attention; residual magnitude is
+            bounded independently per coordinate by self.correction.
+        """
         with torch.no_grad():
             proposal, auxiliary = self.base(tokens, geometry, poses, ages, mask, state, tcp)
             raw = self.base.distribution(self.base.visual(tokens.float())).float()
@@ -65,6 +138,8 @@ class EvidenceRouteHead(nn.Module):
         var = variance.flatten(1, 2)
         targets = tcp[:, None, :3, 3] + proposal
         offset = xyz[:, None] - targets[:, :, None]
+        # Flatten time/cell into E=T*16 evidence entries. Each of six knots
+        # queries all entries: offsets/values carry axes (B, 6, E, channels).
         goal_offset = (xyz - goal_xyz(state)[:, None])[:, None].expand(-1, 6, -1, -1)
         camera_offset = (points - poses[:, :, None, :3, 3]).flatten(1, 2)[:, None].expand(-1, 6, -1, -1)
         age = ages[..., None, None].expand(-1, -1, cells, -1).flatten(1, 2)[:, None].expand(-1, 6, -1, -1)/60

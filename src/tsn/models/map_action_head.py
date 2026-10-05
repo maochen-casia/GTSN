@@ -10,6 +10,17 @@ class SpatialStage(nn.Module):
     """Downsample once, then refine with a two-convolution residual branch."""
 
     def __init__(self, input_channels: int, output_channels: int, first: bool) -> None:
+        """Build a stride-two convolution and shape-preserving residual block.
+
+        Args:
+            input_channels (int): Number of channels in the input feature map.
+            output_channels (int): Number of output channels, divisible by 8
+                for GroupNorm.
+            first (bool): Use a 5 x 5 downsampling kernel if True, else 3 x 3.
+
+        Returns:
+            None. Initializes convolution and normalization parameters.
+        """
         super().__init__()
         kernel = 5 if first else 3
         self.downsample = nn.Sequential(
@@ -24,6 +35,16 @@ class SpatialStage(nn.Module):
         )
 
     def forward(self, maps: torch.Tensor) -> torch.Tensor:
+        """Downsample and refine a batch of spatial feature maps.
+
+        Args:
+            maps (torch.Tensor): Floating maps (B, input_channels, H, W).
+
+        Returns:
+            torch.Tensor: Floating features
+            (B, output_channels, ceil(H/2), ceil(W/2)). The residual branch
+            preserves the downsampled resolution and channel count.
+        """
         encoded = self.downsample(maps)
         return torch.nn.functional.silu(encoded + self.refine(encoded))
 
@@ -39,6 +60,27 @@ class MapActionHead(nn.Module):
     def __init__(self, *, state_dim: int, action_dim: int, chunk_size: int,
                  action_scale_rad: float, encoder_channels: list[int], spatial_pool_size: int,
                  map_feature_dim: int, state_feature_dim: int, hidden_dim: int, dropout: float) -> None:
+        """Build spatial/state encoders and the bounded joint regression head.
+
+        Args:
+            state_dim (int): State width; must be 16.
+            action_dim (int): Number of arm joints; must be 7.
+            chunk_size (int): Positive number L of future joint targets.
+            action_scale_rad (float): Positive per-coordinate offset bound, rad.
+            encoder_channels (list[int]): Nonempty sequence of positive stage
+                widths, each divisible by 8; each stage halves spatial size.
+            spatial_pool_size (int): Positive pooled grid side length.
+            map_feature_dim (int): Positive width of the pooled map embedding.
+            state_feature_dim (int): Positive width of the state embedding.
+            hidden_dim (int): Positive width of the fused regression layer.
+            dropout (float): Training dropout probability in [0, 1).
+
+        Returns:
+            None. Initializes trainable layers and stores action horizon/scale.
+
+        Raises:
+            ValueError: State/action dimensions or layer settings are invalid.
+        """
         super().__init__()
         if state_dim != 16 or action_dim != 7 or chunk_size <= 0 or action_scale_rad <= 0:
             raise ValueError("Expected Panda state=16, arm actions=7 and positive horizon/scale")
@@ -70,7 +112,23 @@ class MapActionHead(nn.Module):
         )
 
     def forward(self, maps: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
+        """Fuse predicted geometry with proprioception and the requested goal.
+
+        Args:
+            maps (torch.Tensor): Floating maps (B, 6, H, W): normalized
+                base-frame point XYZ, projected goal, visible goal, and future
+                action score. The first three channels use the training map
+                centre/scale; the last three are scores in [0, 1].
+            state (torch.Tensor): Floating state (B, 16): seven arm angles / pi,
+                two finger positions / .04 m, normalized goal XYZ, and a unit
+                goal quaternion (wxyz). Batch size/device must match maps.
+
+        Returns:
+            torch.Tensor: Floating joint offsets (B, chunk_size, 7), radians,
+            bounded by +/-action_scale_rad. Every target is relative to the
+            same observed qpos; targets are not accumulated along the horizon.
+            Output dtype follows the active autocast context.
+        """
         features = torch.cat((self.map_projection(self.spatial(maps)), self.state_projection(state)), dim=1)
         output = self.output(features).reshape(-1, self.chunk_size, self.action_dim)
         return output.tanh() * self.action_scale_rad
-
