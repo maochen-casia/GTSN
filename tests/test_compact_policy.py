@@ -7,7 +7,7 @@ import torch
 from tsn.models.clearance_policy import ClearancePolicy
 from tsn.models.compact_policy import CompactPolicy, CompactRouteHead, load_compact_policy
 from tsn.models.kinematics import PandaKinematics
-from tsn.models.persistent_policy import PersistentSceneHead, metric_points
+from tsn.models.current_view_policy import CurrentViewHead, metric_points
 
 
 class Perception(torch.nn.Module):
@@ -58,9 +58,7 @@ class CompactPolicyTests(unittest.TestCase):
         torch.testing.assert_close(inverse.call_args.args[1], expected.reshape(30, 3), rtol=0, atol=1e-7)
 
     def test_matches_shared_controller_when_clearance_is_identity(self):
-        for head in (CompactRouteHead(), PersistentSceneHead(use_points=False), PersistentSceneHead()):
-            if isinstance(head, PersistentSceneHead):
-                torch.nn.init.normal_(head.memory_residual.weight, std=.01)
+        for head in (CompactRouteHead(), CurrentViewHead()):
             kin = PandaKinematics()
             compact = CompactPolicy(Perception(), head, kin).eval()
             clearance = ClearancePolicy(Perception(), head, kin).eval()
@@ -71,15 +69,15 @@ class CompactPolicyTests(unittest.TestCase):
                     clearance.observe_step(step)
                     torch.testing.assert_close(compact(*args), clearance(*args), rtol=0, atol=0)
             self.assertFalse(hasattr(compact, 'clouds'))
-            if isinstance(head, PersistentSceneHead):
+            if isinstance(head, CurrentViewHead):
                 self.assertIsNotNone(compact.scene_memory)
 
     def test_finer_points_requested_only_by_detailed_head(self):
-        for head in (CompactRouteHead(), PersistentSceneHead(use_points=False), PersistentSceneHead()):
+        for head in (CompactRouteHead(), CurrentViewHead()):
             backbone = Perception()
             model = CompactPolicy(backbone, head, torch.nn.Identity())
             model.perceive(torch.zeros(1, 1, 1, 3, dtype=torch.uint8), torch.zeros(1, 16), None, None)
-            detailed = isinstance(head, PersistentSceneHead) and head.use_points
+            detailed = isinstance(head, CurrentViewHead) and head.use_points
             self.assertEqual(backbone.calls, [(True, detailed)])
             if detailed:
                 torch.testing.assert_close(model.current_points, metric_points(torch.zeros(1, 6, 20, 20)))

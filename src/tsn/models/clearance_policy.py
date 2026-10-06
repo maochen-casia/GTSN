@@ -58,7 +58,7 @@ class ClearancePolicy(RouteController):
         action, tokens, geometry, dense = self.backbone(
             rgb, state, K, pose, return_features=True, return_maps=True)
         if hasattr(self.head, 'stream'):
-            from tsn.models.persistent_policy import metric_points
+            from tsn.models.current_view_policy import metric_points
             self.current_points = metric_points(dense)
         points = F.interpolate(dense[:, :3].float(), self.cloud_grid,
                                mode='nearest-exact').flatten(2).transpose(1, 2)

@@ -14,7 +14,7 @@ def main():
     parser.add_argument('--print-command', action='store_true')
     parser.add_argument('--source-snapshot', type=Path,
                         help='Run an existing source snapshot within the project or experiment storage')
-    parser.add_argument('command', choices=('train', 'evaluate', 'report', 'geometry_figure', 'persistent_study', 'test'))
+    parser.add_argument('command', choices=('train', 'evaluate', 'report', 'geometry_figure', 'corrective', 'test'))
     args, extra = parser.parse_known_args()
     root = Path(__file__).resolve().parents[1]
     snapshot = args.source_snapshot.resolve() if args.source_snapshot else root
@@ -49,11 +49,10 @@ def main():
                 extra[index + 1] = str(output)
             else:
                 extra = [f'--output-dir={output}' if value.startswith('--output-dir=') else value for value in extra]
-            resume = args.command == 'persistent_study' and '--resume' in extra
-            if output.exists() and not resume:
+            if output.exists():
                 parser.error('Output directory already exists')
             if not args.print_command:
-                output.mkdir(parents=True, exist_ok=resume)
+                output.mkdir(parents=True)
             command += ['--mount', f'type=bind,source={output},target={output}']
         if not args.cpu:
             command += ['--gpus', 'all' if args.gpu == 'all' else f'"device={args.gpu}"']
