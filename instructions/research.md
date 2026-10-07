@@ -2,22 +2,31 @@
 
 ## Benchmark: tsn-1k
 
-The benchmark has been saved in `/run/user/1016/tsn-1k`, with 1,000 episodes, including 200 direct type, 400 over type, and 400 side type. 800 are used for training, 100 for validation and 100 for testing. Ensure that the ratio of different route types remain the same (2:4:4). Training uses the corrective caches, 20 epochs.
+The benchmark has been saved in `/run/user/1016/tsn-1k`, with 1,000 episodes, including 200 direct type, 400 over type, and 400 side type. 800 are used for training, 100 for validation and 100 for testing. Ensure that the ratio of different route types remain the same (2:4:4).
 
 The experiment log, result, checkpoint, should be saved in `/run/user/1016/experiments`.
 
-## Persistent Spatial Representation
-I want to introduce persistent spatial representation into current compact policy, and compare their performance. Specifically, the scene is represented by $K$ geometric gaussian (with center position, variance, etc). Given a new RGB, first extract new $N$ gaussians from this observation, then concat with previous $K$ gaussians ($K$ should be larger than $N$), and conduct self-attention among these $N+K$ gaussians and update them (the gaussian parameters). This step works as a merging step, to merge history and new gaussians. Finally, predict a score for each gaussian, and keep only the top-$K$. This score should be incorporated into the following process instead of only for selection, so that it can be updated by back-propogation.
+## Research Topic
 
-These gaussians are used for clearance-based refine, like in clearance policy. Specifically, several candidate routes will be ranked according to their clearance to the spatial representation (gaussians) to refine a more robust and safe route. Different from current clearance policy, this stage should be designed as a learnable module and should be trained.
+The main idea is 3D geometry-grounded table scene navigation. I have some general ideas for your reference that may be helpful:
 
-During training, maybe for each frame, you can sample several history frames, extract $N$ gaussians from them, and conduct self-attention among all these gaussians and select top-$K$ for clearance refinement. During evaluation, maintain $K$ gaussians, and extract $N$ from current observations. It is important to keep the training and inference behavior consistent, so that no gap will be introduced. 
+1. persistent geometry, incorporate history geometry information and maintain persistent representation that can help following action prediction.
+2. actionable geometry, geometry is usually descriptive, and maybe can be incorporated with task-relevant information or embodied information.
+
+These ideas are just for your reference. You don't have to strictly follow them. You are free to propose your own ideas.
+
+## Current resources
+
+I have implemented three baseline policies: pi3 policy, compact policy, and clearance policy. They may achieve competitive performance, but do not strongly align with the main idea of geometry-grounding topic. You can refer to them, see what may be reusable and helpful. But you don't have to strictly follow their implementation. Feel free to propose your new design.
 
 ## Task
-You should follow the above design and implement it. However, you are also free to revise or improve the above design when necessary. After implementation, you should also run experiments to validate the effectiveness.
+You should think about the research gaps and contributions centered around the topic of 3D geometry-grounded navigation, finishing a complete and coherent research story with 3 challenges and corresponding contributions. And you should also implement your ideas, run the experiment to validate the effectiveness. You are highly free in idea thinking, design, and implementation. The criteria are:
 
-## Goal
-You should continue working on analyzing, proposing new methods, implementing and validating through experiments, until significant improvement is attained (success rate improvement >= 5 compared to compact policy). However, if there are long training or testing process, you don't have to wait for them alive. You can complete your current work and tell me when they are expected to finish, and I will wake you up when they finish. (The compact policy evaluation is currently in progress, and it is expected to finish in 20 minutes.)
+1. Each contribution should be verified and supported by performance improvement. So it should be supported by ablation result.
+2. The overall success rate of both validation and testing set should >= 70. No need to surpass the existing baselines.
+3. A coherent research story should be established centered around geometry-grounded navigation.
+4. Try to work on model architecture first, using expert route + perturbation-only recovery data for training. Don't start with data changing. But you are allowed to do so when necessary.
+5. Summarize your successful progress (idea + result) in `documents/research_progress.md` briefly.
 
 ## Importante Notes
-You cannot directly install environment or packages in user environment. Instead, prepare the needed environment in Docker, and use Docker to run process. You cannot edit or change other existing docker images irrelevant to this project or belong to other users. You can directly edit codes or scripts in user environment, and read files. If any actions require installing new packages, do it in docker. Keep the user environment clean.  You can only work on /home/chenmao/GTSN/ (for codes and scripts) and /run/user/1016/ (for data storage). You cannot edit or save anything outside these two directories.
+You cannot directly install environment or packages in user environment. Instead, prepare the needed environment in Docker, and use Docker to run process. You cannot edit or change other existing docker images irrelevant to this project or belong to other users. You can directly edit codes or scripts in user environment, and read files. If any actions require installing new packages, do it in docker. Keep the user environment clean.  You can only work on /home/chenmao/GTSN/ (for codes and scripts) and /run/user/1016/ (for experiment and data storage). You cannot edit or save anything outside these two directories. Remember to remove your unsuccessful trials that you will no longer use to free the space.

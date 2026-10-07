@@ -1,4 +1,64 @@
-# GTSN current-view corrective control
+# GTSN: geometry-grounded table scene navigation
+
+The completed C1/C2/C3 follow-ups meet their requested **≥3-point observed success
+gains on both full splits**. The final model uses adaptive persistent surface
+anchors, regional hand/tool geometry and uncertainty-aware obstacle inflation,
+reaching **91% validation / 89% test** collision-free XYZ success.
+
+| Study | Model validation / test | Matched control validation / test | Gain, points |
+|---|---:|---:|---:|
+| C1 persistent geometry | 89 / 81 | Current RGB frame only: 79 / 75 | **+10 / +6** |
+| C2 regional body geometry | 91 / 89 | TCP-only: 87 / 85 | **+4 / +4** |
+| C3 uncertainty clearance | 89 / 82 | No clearance refinement: 82 / 78 | **+7 / +4** |
+
+C1's strict control disables all earlier geometry and visual features. Selected
+C1 retains four visual features and queries geometry up to 330 control steps
+old; its extra map adds +2 validation points over four clouds and ties test.
+C3 trains a 4,865-parameter point-error head using existing expert/perturbation
+targets, and adds up to 30 mm of padding around uncertain geometry. Its control
+preserves the four-feature route proposal and disables clearance corrections.
+C2 models palm, measured fingers, rigid wrist and camera housing, rejects self
+surfaces, and scores contact separately by body region. Its TCP control skips
+body scoring and filtering. Validation selects the final model before test.
+These are staged comparisons; their gains cannot be added.
+
+Adaptive uncertainty's additional success benefit is not established: fixed
+clearance scores 89/81 and matching uniform padding 87/83. Measured error-quantile
+coverage is 77.7%, below the 90% target. The historically reused test remains
+exploratory. C2's paired intervals are [0,+9]/[−1,+10] points. Completed
+**4,600 new follow-up rollouts**, paired reports, trajectory/action audits and
+PNG/PDF figures; **89 regression tests pass**.
+
+- [Research progress](documents/research_progress.md)
+- [Three-challenge story and scoped ablation results](documents/research_story.md)
+- [C1 architecture, attribution and reproduction](documents/c1_persistent_geometry.md)
+- [C2 body representation, controls and reproduction](documents/c2_embodied_geometry.md)
+- [C3 architecture, calibration, controls and reproduction](documents/c3_uncertainty_clearance.md)
+- [C3 results and exportable figures](runs/c3_uncertainty_20261007/final)
+- [Final C2 results, geometry figures and receipts](runs/c2_part_geometry_20261007/final)
+- [Initial energy method and original C2 evidence](documents/geometric_energy_method.md)
+
+Replay the validation-selected regional C2 model into a new output directory:
+
+```bash
+python3 scripts/docker_run.py --image gtsn-persistent:20261005-compact-only --gpu 0 evaluate \
+  --controller embodied_clearance --body-mode tool --body-weight 1 \
+  --body-self-mask --body-pose fixed --body-field gaussian --body-representation parts \
+  --uncertainty-padding 0.03 \
+  --checkpoint /run/user/1016/experiments/gtsn_c3_uncertainty_20261007/training/uncertainty.pt \
+  --partition test --no-render-videos \
+  --output-dir /run/user/1016/experiments/c2-regional-replay-new
+```
+
+Use `--body-mode tcp --body-weight 0 --no-body-self-mask` for C2's matched
+control. C3 replay uses `--controller uncertain_clearance` and
+`--refinement-mode adaptive`, `none`, `fixed` or `uniform`. C1 replay
+uses `--controller adaptive_geometry --memory-mode unconfirmed` with the energy
+checkpoint; `current` selects its strict control and `recent` four-frame memory.
+All numerical work runs in the existing Docker image. Thin adapters verify the
+unchanged parent checkpoint hashes and reuse its weights without duplication.
+
+## Existing current-view corrective control
 
 The retained model uses current RGB-predicted geometry, four compressed frame
 features, and a correctively trained route residual. Spatial slots are rebuilt

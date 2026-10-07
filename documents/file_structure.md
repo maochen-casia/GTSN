@@ -100,3 +100,65 @@ snapshots and launches the matched ablations; `verify_simplification_docker.py`
 verifies the exported policy. `models/simplified_consensus.py` loads the standalone
 compact checkpoint, and `scripts/evaluate_simplified.py` evaluates its saved test
 split in Docker.
+# Geometry-grounded energy study (2026-10-07)
+
+- `src/tsn/models/geometric_energy.py`: explicit swept-surface energy, bounded
+  learned route trust, component controls and a strict thin-checkpoint loader.
+- `src/tsn/cli/geometric_energy.py`: fixed expert/perturbation-cache training.
+- `scripts/run_geometric_energy_study.py`: source/checkpoint freezing and the
+  validation/test/report panels in project Docker.
+- `src/tsn/cli/geometric_energy_report.py`: completed-result consolidation,
+  criteria receipts and exportable architecture/ablation figures.
+- `tests/test_geometric_energy.py`: geometry, empty evidence, hand extent, trust
+  bounds, episode resets and exact fixed-trust decision parity.
+- `documents/research_progress.md`, `research_story.md`,
+  `geometric_energy_method.md`: brief progress, full story and method specification.
+- `runs/geometric_energy_20261007`: link to the complete experiment archive.
+
+## C1 persistent-geometry follow-up
+
+- `src/tsn/models/adaptive_geometry.py`: bounded anchored map, observation
+  agreement, optional support weights, persistent reads and matched memory modes.
+- `src/tsn/cli/evaluate.py`: `adaptive_geometry` controller and strict current
+  frame / geometry-only / recent / persistent controls.
+- `scripts/run_c1_study.py`: immutable source, validation nomination, frozen test
+  panels, compatible control reuse and Docker reports.
+- `src/tsn/cli/c1_report.py`: paired outcomes, actual map-use audits, target
+  criteria and PNG/PDF figures.
+- `src/tsn/cli/c1_verify.py`: active/frozen complete-controller command parity.
+- `tests/test_adaptive_geometry.py`: view votes, retention, disagreement,
+  capacity, causality, query parity, reset and strict current-RGB invariance.
+- `documents/c1_persistent_geometry.md`: method, complete results and limits.
+- `runs/c1_consensus_20261007`, `c1_geometry_only_20261007` and
+  `c1_map_attribution_20261007`: completed primary and attribution archives.
+
+## C3 uncertainty-clearance follow-up
+
+- `src/tsn/models/uncertain_clearance.py`: point-error prediction, persistent
+  anchor uncertainty, point-specific inflation and no/fixed/uniform controls.
+- `src/tsn/cli/uncertainty.py`: fixed-epoch quantile training using existing
+  expert/perturbation point targets, calibration records and input hashes.
+- `scripts/run_c3_study.py`: frozen validation selection, matching test controls
+  and reuse of the verified C1 fixed-clearance reference.
+- `src/tsn/cli/c3_report.py`: paired effects, calibration, trajectory and action
+  audits, target receipts, and exportable method/result figures.
+- `tests/test_uncertain_clearance.py`: quantile gradients, cell alignment,
+  monotone inflation, finite/empty risk, reset and complete control parity.
+- `documents/c3_uncertainty_clearance.md`: architecture, training, controls and
+  reproduction; experiment storage is under the designated external root.
+
+## C2 embodied-geometry follow-up
+
+- `src/tsn/models/embodied_clearance.py`: known Panda collision geometry,
+  measured finger opening, observation-time self filtering, regional/signed
+  contact representations and exact TCP/axial controls.
+- `scripts/run_c2_study.py`: immutable validation panels, enforced nomination,
+  frozen full-test comparisons and compatible reference reuse in Docker.
+- `src/tsn/cli/c2_report.py`: primary/secondary paired effects, full trajectory
+  audits with reuse deduplication, target receipts and PNG/PDF research figures.
+- `src/tsn/cli/c2_verify.py`: active/archived complete-command parity through
+  map/history, uncertainty, embodiment scoring and IK.
+- `tests/test_embodied_clearance.py`: metric collision primitives, finger
+  opening, rotation covariance, self filtering, regional contact aggregation,
+  empty evidence, posture candidates and complete-controller control parity.
+- `documents/c2_embodied_geometry.md`: method, staged evidence and reproduction.

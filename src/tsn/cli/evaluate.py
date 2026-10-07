@@ -22,11 +22,22 @@ def main():
     parser.add_argument('--dataset-root', type=Path)
     parser.add_argument('--eval-config', type=Path, help='Override checkpoint rollout settings')
     parser.add_argument('--device', default='cuda')
-    parser.add_argument('--controller', choices=('clearance', 'compact'), default='clearance',
+    parser.add_argument('--controller', choices=('clearance', 'compact', 'geometric_energy', 'adaptive_geometry', 'uncertain_clearance', 'embodied_clearance'), default='clearance',
                         help='compact executes the learned route without clearance corrections')
     parser.add_argument('--render-videos', action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument('--clearance-margin', type=float, default=.04)
     parser.add_argument('--clearance-penalty', type=float, default=.08)
+    parser.add_argument('--energy-ablation', choices=('full', 'no_history', 'current_frame', 'tcp_only', 'no_trust', 'fixed_trust'), default='full')
+    parser.add_argument('--memory-mode', choices=('persistent', 'recent', 'current', 'unconfirmed', 'persistent_visual',
+                                                'persistent_geometry', 'recent_geometry', 'unconfirmed_geometry'), default='unconfirmed')
+    parser.add_argument('--refinement-mode', choices=('adaptive', 'uniform', 'fixed', 'none'), default='adaptive')
+    parser.add_argument('--uncertainty-padding', type=float, default=.02)
+    parser.add_argument('--body-mode', choices=('tcp','axial','hand','tool'), default='tool')
+    parser.add_argument('--body-weight', type=float, default=.7)
+    parser.add_argument('--body-self-mask', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--body-pose', choices=('fixed','roll','wide_roll'), default='fixed')
+    parser.add_argument('--body-field', choices=('gaussian','signed'), default='gaussian')
+    parser.add_argument('--body-representation', choices=('union','parts'), default='union')
     args = parser.parse_args()
     if (not math.isfinite(args.clearance_margin) or args.clearance_margin <= 0 or
             not math.isfinite(args.clearance_penalty) or args.clearance_penalty < 0):
@@ -36,7 +47,28 @@ def main():
         parser.error('Output directory already exists; use a new directory')
     torch.set_num_threads(1)
     device = require_device(args.device)
-    if args.controller == 'compact':
+    if args.controller == 'embodied_clearance':
+        from tsn.models.embodied_clearance import load_embodied_clearance
+        policy,maps,checkpoint = load_embodied_clearance(args.checkpoint,device,args.body_mode,args.body_weight,
+            args.uncertainty_padding,args.body_self_mask,args.body_pose,args.body_field,args.body_representation)
+        clearance = dict(mode='embodied_clearance',embodiment=policy.embodiment_config(),
+                         refinement=policy.refinement_config(),memory=policy.memory_config(),
+                         training=checkpoint['uncertainty_training'])
+    elif args.controller == 'uncertain_clearance':
+        from tsn.models.uncertain_clearance import load_uncertain_clearance
+        policy, maps, checkpoint = load_uncertain_clearance(args.checkpoint, device, args.refinement_mode, args.uncertainty_padding)
+        clearance = dict(mode='uncertain_clearance', refinement=policy.refinement_config(),
+                         memory=policy.memory_config(), training=checkpoint['uncertainty_training'])
+    elif args.controller == 'adaptive_geometry':
+        from tsn.models.adaptive_geometry import load_adaptive_geometry
+        policy, maps, checkpoint = load_adaptive_geometry(args.checkpoint, device, args.memory_mode)
+        clearance = dict(mode='adaptive_geometry', memory_mode=args.memory_mode,
+                         training=checkpoint['geometric_energy'], memory=policy.memory_config())
+    elif args.controller == 'geometric_energy':
+        from tsn.models.geometric_energy import load_geometric_energy
+        policy, maps, checkpoint = load_geometric_energy(args.checkpoint, device, args.energy_ablation)
+        clearance = dict(mode='geometric_energy', ablation=args.energy_ablation, training=checkpoint['geometric_energy'])
+    elif args.controller == 'compact':
         policy, maps, checkpoint = load_compact_policy(args.checkpoint, device)
         clearance = dict(mode='disabled')
     else:
