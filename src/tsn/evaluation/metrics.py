@@ -1,4 +1,4 @@
-"""Masked joint prediction statistics and episode-weighted rollout summaries."""
+"""Episode-weighted success, collision and reaching metrics."""
 
 from __future__ import annotations
 

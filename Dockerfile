@@ -1,4 +1,4 @@
-# Self-contained compact-model runtime; build under a new project-specific tag.
+# Main C1/C2/C3 runtime; build under a new project-specific tag.
 ARG BASE_IMAGE=pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
 FROM ${BASE_IMAGE}
 ARG INSTALL_RUNTIME=1
@@ -39,4 +39,3 @@ RUN if [ "$INSTALL_RUNTIME" = 1 ]; then \
 # install it without dependencies after declaring all its actual dependencies above.
 # Panda URDF and meshes are shipped in mani-skill; no asset download is required.
 CMD ["python", "-m", "tsn.cli.train", "--help"]
-

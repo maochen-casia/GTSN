@@ -10,18 +10,7 @@ from torch import nn
 class PandaKinematics(nn.Module):
     """URDF-derived FK/Jacobian; no scene or simulator state is used."""
     def __init__(self):
-        """Load the Panda base-to-TCP chain from ManiSkill's bundled URDF.
-
-        Args:
-            None.
-
-        Returns:
-            None. Registers float32 buffers: origins (J, 4, 4) for all J
-            chain joints including fixed joints, axes (7, 3) for revolute
-            joints, and lower/upper angle limits (7, 2) in radians. Origin
-            translations are metres; indices maps each chain joint to an
-            actuated index or -1 for a fixed joint.
-        """
+        """Load the Panda base-to-TCP chain from ManiSkill's bundled URDF."""
         super().__init__()
         from mani_skill import PACKAGE_ASSET_DIR
         from scipy.spatial.transform import Rotation
@@ -55,24 +44,7 @@ class PandaKinematics(nn.Module):
         self.register_buffer('limits', torch.tensor(limits))
 
     def forward(self, q, jacobian=False):
-        """Compute TCP forward kinematics and optionally its spatial Jacobian.
-
-        Args:
-            q (torch.Tensor): Floating arm angles (..., 7), radians. Any
-                leading batch/horizon dimensions are retained; cast to float32.
-            jacobian (bool): Also return derivatives of TCP position/rotation.
-
-        Returns:
-            torch.Tensor | tuple[torch.Tensor, torch.Tensor]: Float32
-            TCP-to-base transform (..., 4, 4), with translation in metres.
-            If jacobian=True, returns (transform, J), where J is float32
-            (..., 6, 7). The first three rows are base-frame linear velocity
-            per joint rate (m/rad), the last three angular velocity per joint
-            rate. Buffers and input must reside on the same device.
-
-        Raises:
-            ValueError: A revolute URDF axis is not the supported local z axis.
-        """
+        """Compute TCP forward kinematics and optionally its spatial Jacobian."""
         q = q.float()
         t = torch.eye(4, device=q.device).expand(*q.shape[:-1], 4, 4).clone()
         positions, directions = [], []
@@ -98,22 +70,7 @@ class PandaKinematics(nn.Module):
         return t, torch.cat((linear, axis), -2)
 
     def inverse(self, q, xyz, rotation, iterations=12):
-        """Track target poses with bounded damped least-squares IK updates.
-
-        Args:
-            q (torch.Tensor): Floating seed angles (..., 7), radians; copied
-                before iteration. Seeds may be measured or proposed joints.
-            xyz (torch.Tensor): Floating target base-frame positions (..., 3), m.
-            rotation (torch.Tensor): Floating target TCP-to-base rotation
-                matrices (..., 3, 3), with matching leading dimensions.
-            iterations (int): Number of updates, default 12; no early stopping.
-
-        Returns:
-            torch.Tensor: Float32 fitted angles (..., 7), radians. Each update
-            limits the largest joint change to .12 rad and clamps angles .01
-            rad inside URDF limits. The result is approximate; target pose
-            residuals are not returned and convergence is not guaranteed.
-        """
+        """Track target poses with bounded damped least-squares IK updates."""
         q = q.float().clone()
         xyz, rotation = xyz.float(), rotation.float()
         for _ in range(iterations):

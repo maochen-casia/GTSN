@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gtsn-compact"
+name = "gtsn"
 version = "0.1.0"
-description = "Deterministic RGB hand-clearance navigation policy for tsn-1k"
+description = "Geometry-grounded RGB navigation with persistent memory, embodiment and uncertainty"
 requires-python = ">=3.10"
 dependencies = [
   "torch==2.6.0", "numpy==1.26.4", "h5py==3.14.0",

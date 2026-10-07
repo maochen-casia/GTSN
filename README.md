@@ -1,214 +1,109 @@
 # GTSN: geometry-grounded table scene navigation
 
-The completed C1/C2/C3 follow-ups meet their requested **≥3-point observed success
-gains on both full splits**. The final model uses adaptive persistent surface
-anchors, regional hand/tool geometry and uncertainty-aware obstacle inflation,
-reaching **91% validation / 89% test** collision-free XYZ success.
+This checkout contains one main model and its training, closed-loop validation
+and test paths. The policy composes three geometry modules:
 
-| Study | Model validation / test | Matched control validation / test | Gain, points |
-|---|---:|---:|---:|
-| C1 persistent geometry | 89 / 81 | Current RGB frame only: 79 / 75 | **+10 / +6** |
-| C2 regional body geometry | 91 / 89 | TCP-only: 87 / 85 | **+4 / +4** |
-| C3 uncertainty clearance | 89 / 82 | No clearance refinement: 82 / 78 | **+7 / +4** |
+| Module | File | Responsibility |
+|---|---|---|
+| C1 | [c1_memory.py](src/tsn/models/c1_memory.py) | Bounded persistent surface anchors, recent observations and retained uncertainty |
+| C2 | [c2_embodiment.py](src/tsn/models/c2_embodiment.py) | Measured hand and rigid-tool geometry, self-surface filtering and regional contact features |
+| C3 | [c3_clearance.py](src/tsn/models/c3_clearance.py) | Point-error prediction, uncertainty padding and route-preserving clearance refinement |
 
-C1's strict control disables all earlier geometry and visual features. Selected
-C1 retains four visual features and queries geometry up to 330 control steps
-old; its extra map adds +2 validation points over four clouds and ties test.
-C3 trains a 4,865-parameter point-error head using existing expert/perturbation
-targets, and adds up to 30 mm of padding around uncertain geometry. Its control
-preserves the four-feature route proposal and disables clearance corrections.
-C2 models palm, measured fingers, rigid wrist and camera housing, rejects self
-surfaces, and scores contact separately by body region. Its TCP control skips
-body scoring and filtering. Validation selects the final model before test.
-These are staged comparisons; their gains cannot be added.
+[policy.py](src/tsn/models/policy.py) composes these modules with RGB perception,
+a four-frame route head and Panda kinematics. The hand, both fingers, rigid
+wrist and camera housing are modelled; the articulated arm is excluded. The
+policy predicts a 30-step chunk and executes 15 steps before observing again.
+Per-episode memory resets explicitly and is never serialized as model weights.
 
-Adaptive uncertainty's additional success benefit is not established: fixed
-clearance scores 89/81 and matching uniform padding 87/83. Measured error-quantile
-coverage is 77.7%, below the 90% target. The historically reused test remains
-exploratory. C2's paired intervals are [0,+9]/[−1,+10] points. Completed
-**4,600 new follow-up rollouts**, paired reports, trajectory/action audits and
-PNG/PDF figures; **89 regression tests pass**.
+## Main experiment
 
-- [Research progress](documents/research_progress.md)
-- [Three-challenge story and scoped ablation results](documents/research_story.md)
-- [C1 architecture, attribution and reproduction](documents/c1_persistent_geometry.md)
-- [C2 body representation, controls and reproduction](documents/c2_embodied_geometry.md)
-- [C3 architecture, calibration, controls and reproduction](documents/c3_uncertainty_clearance.md)
-- [C3 results and exportable figures](runs/c3_uncertainty_20261007/final)
-- [Final C2 results, geometry figures and receipts](runs/c2_part_geometry_20261007/final)
-- [Initial energy method and original C2 evidence](documents/geometric_energy_method.md)
+[configs/main.json](configs/main.json) is the sole experiment configuration.
+It specifies the fixed 800/100/100 tsn-1k split and 2:4:4 route ratio, existing
+expert plus independent perturbation data, model settings, optimizer, and
+simulation settings. Primary success is collision-free XYZ reaching within
+1 cm, with full XYZ-plus-orientation success reported separately.
 
-Replay the validation-selected regional C2 model into a new output directory:
+Training initializes the geometry decoder, joint proposal, route head,
+uncertainty head and clearance trust head afresh. It does **not** take a previous
+navigation checkpoint. The default uses published Pi3 image-encoder weights
+and freezes that encoder. For entirely random initialization, set
+`model.perception.pretrained_weights` to `null` and `freeze_encoder` to `false`.
+Only measured state, requested goal, camera calibration and RGB predictions
+enter deployment; depth and expert futures provide training targets.
+
+Train in the existing project Docker image, using a new output directory:
 
 ```bash
-python3 scripts/docker_run.py --image gtsn-persistent:20261005-compact-only --gpu 0 evaluate \
-  --controller embodied_clearance --body-mode tool --body-weight 1 \
-  --body-self-mask --body-pose fixed --body-field gaussian --body-representation parts \
-  --uncertainty-padding 0.03 \
-  --checkpoint /run/user/1016/experiments/gtsn_c3_uncertainty_20261007/training/uncertainty.pt \
+python3 scripts/docker_run.py --gpu 0 train \
+  --config /home/chenmao/GTSN/configs/main.json \
+  --output-dir /run/user/1016/experiments/gtsn-main-new
+```
+
+The trainer optimizes the navigation heads and decoder jointly. Earlier RGB
+features are detached during training; their timestamps and episode boundaries
+remain causal. Each perturbation observation starts with fresh history.
+Validation waypoint RMSE selects `best.pt`; test data is never used for training
+or checkpoint selection. The exported checkpoint contains the complete model
+state, configuration and splits, with no parent-checkpoint chain.
+
+Evaluate the trained main model on each full partition:
+
+```bash
+python3 scripts/docker_run.py --gpu 0 evaluate \
+  --checkpoint /run/user/1016/experiments/gtsn-main-new/best.pt \
+  --partition validation --no-render-videos \
+  --output-dir /run/user/1016/experiments/gtsn-main-validation-new
+
+python3 scripts/docker_run.py --gpu 0 evaluate \
+  --checkpoint /run/user/1016/experiments/gtsn-main-new/best.pt \
   --partition test --no-render-videos \
-  --output-dir /run/user/1016/experiments/c2-regional-replay-new
+  --output-dir /run/user/1016/experiments/gtsn-main-test-new
 ```
 
-Use `--body-mode tcp --body-weight 0 --no-body-self-mask` for C2's matched
-control. C3 replay uses `--controller uncertain_clearance` and
-`--refinement-mode adaptive`, `none`, `fixed` or `uniform`. C1 replay
-uses `--controller adaptive_geometry --memory-mode unconfirmed` with the energy
-checkpoint; `current` selects its strict control and `recent` four-frame memory.
-All numerical work runs in the existing Docker image. Thin adapters verify the
-unchanged parent checkpoint hashes and reuse its weights without duplication.
+Optional repeated `--episode` arguments select members of the requested
+partition for a short run; the result records whether the partition is complete.
+Evaluation saves overall/per-route metrics, episode trajectories and optional
+videos. Policy diagnostics and separate analysis/ablation entry points have
+been removed.
 
-## Existing current-view corrective control
+## Source layout and verification
 
-The retained model uses current RGB-predicted geometry, four compressed frame
-features, and a correctively trained route residual. Spatial slots are rebuilt
-at every observation; there is no persistent spatial memory. The frozen Pi3
-backbone, wrist proposal, inverse kinematics, terminal servo, and 15-step
-execution cadence are preserved. Evaluation uses `--controller compact`, which
-disables the separate clearance controller.
+```text
+configs/main.json
+scripts/docker_run.py
+src/tsn/
+  models/       C1, C2, C3, composed policy, perception, route and kinematics
+  data/         Benchmark schema, fixed splits and causal observation histories
+  training/     Main training loop and supervised objectives
+  evaluation/   Closed-loop rollouts and success/collision metrics
+  simulation/   Benchmark geometry, robot execution and rendering
+  features/     Training geometry targets and measured-state normalization
+  common/       Configuration, seeds and standalone checkpoints
+  cli/          train and evaluate
+tests/          Main-model, data, geometry and execution regression checks
+```
 
-On the fixed tsn-1k splits, the retained checkpoint achieved **85/100 validation**
-and **88/100 test** successes. Original compact achieved 82/100 and 78/100.
-The persistent corrective alternative achieved 89/100 and 86/100. These results
-support retaining corrective training and current-view control; they do not
-establish an additional benefit from persistent spatial memory.
-
-Cleanup verification passed 51 regression tests and reproduced 88/100 test
-successes. Two individual episode outcomes swapped (one gain, one loss), so the
-GPU replay is not trajectory-identical. CPU predictions matched the archived
-implementation exactly across 1,004 cached observations; GPU differences were
-within the measured mixed-precision variation of the unchanged reference.
-The original checkpoint and evaluation trajectories remain unchanged.
-
-## Retained experiment
-
-The experiment stays at
-`/run/user/1016/experiments/gtsn_spatial_v7_corrective_20261005`.
-
-- `training/spatial_history_corrective_current/spatial_history_corrective_current/seed_20261005/best.pt`:
-  original checkpoint, preserved byte for byte.
-- `followup/validation/spatial_history_corrective_current/` and
-  `followup/test/spatial_history_corrective_current/`: original evaluations and trajectories.
-- `collection/shard_0/` through `shard_3/`: consolidated corrective histories and metadata.
-- `initialization/parent_head.pt` and `initialization/initial_residual.pt`:
-  the frozen parent head and original residual initialization, without duplicate backbones.
-- `reference/compact_validation/` and `reference/compact_test/`: baseline evidence.
-- `source/` and `source_sha256.json`: immutable source from the original experiment.
-- `cleanup/`: approved removal manifest and code regression checks.
-- `retained_model.json`: current retained-artifact index. Earlier reports remain
-  historical records and can refer to removed alternatives.
-
-The shared feature cache remains at
-`/run/user/1016/experiments/gtsn_persistent_cache_20261005`. The existing
-`gtsn_simplification_20261003/simplified.pt` supplies the unchanged backbone for
-retraining. The benchmark, pre-existing experiments, and Docker images are retained.
-
-## Docker and evaluation
-
-Run model code, simulation, and tests in Docker. The host scripts use only the
-Python standard library. The existing runtime is
-`gtsn-persistent:20261005-compact-only`; its historical name does not select a model.
+Run regression tests in Docker:
 
 ```bash
-RUN=/run/user/1016/experiments/gtsn_spatial_v7_corrective_20261005
-CHECKPOINT="$RUN/training/spatial_history_corrective_current/spatial_history_corrective_current/seed_20261005/best.pt"
-
-python3 scripts/docker_run.py --image gtsn-persistent:20261005-compact-only --cpu test
-
-python3 scripts/docker_run.py --image gtsn-persistent:20261005-compact-only --gpu 0 evaluate \
-  --controller compact --checkpoint "$CHECKPOINT" --partition test --no-render-videos \
-  --output-dir /run/user/1016/experiments/current-view-test-new
+python3 scripts/docker_run.py --cpu test
 ```
 
-Use `--partition validation` for validation. Each output directory must be new.
-The launcher mounts source and data read-only, allowing writes only to that
-output directory. `--source-snapshot PATH` executes an archived compatible source.
-No host environment installation is needed.
+The launcher mounts source, data and existing experiments read-only. Only the
+requested new output directory is writable. It runs without networking and
+requires no host package installation. The default image is
+`gtsn-persistent:20261005-compact-only`; its historical tag does not select a
+policy. [Dockerfile](Dockerfile) builds a new project image when needed.
 
-## Corrective training
+## Historical research record
 
-The saved data contains 800 training episodes and 8,255 observations: 8,072 safe
-proposals, 163 verified corrections, and 20 observations with masked supervision.
-Each safe proposal becomes its own target. Unsafe proposals receive the first
-correction verified for all 30 simulator steps, with offsets up to 3.5 cm.
-Teacher trials restore simulator state, velocities, and motor targets. Only
-training collection uses that search; deployment performs no teacher search.
+[documents/research_progress.md](documents/research_progress.md) and the method
+documents describe the completed C1/C2/C3 studies. Their results, weights and
+frozen source remain in the existing experiment archives. Historical documents
+are preserved unchanged and may reference removed development scripts.
 
-Only the added residual trains, with a 4 cm per-coordinate bound. Corrected
-observations receive weight 8. Sampling uses only corrective histories and keeps
-the direct/over/side ratio at 2:4:4. The schedule is 20 epochs, 4,096 sequence draws
-per epoch, batch size 32, and seed 20261005. The final epoch is selected in advance.
-The parent parameters remain frozen and are checked before export. GPU reduction
-and mixed-precision rounding can prevent bitwise reproduction across runs; the
-original checkpoint and source snapshot remain the exact reproducibility record.
-
-To train and validate a new copy using the retained data:
-
-```bash
-RUN=/run/user/1016/experiments/gtsn_spatial_v7_corrective_20261005
-python3 scripts/run_corrective_study.py \
-  --checkpoint /run/user/1016/experiments/gtsn_simplification_20261003/simplified.pt \
-  --initial-head "$RUN/initialization/parent_head.pt" \
-  --initial-residual "$RUN/initialization/initial_residual.pt" \
-  --cache /run/user/1016/experiments/gtsn_persistent_cache_20261005 \
-  --recovery-cache "$RUN/collection/shard_0" \
-  --recovery-cache "$RUN/collection/shard_1" \
-  --recovery-cache "$RUN/collection/shard_2" \
-  --recovery-cache "$RUN/collection/shard_3" \
-  --baseline-validation "$RUN/reference/compact_validation" \
-  --baseline-test "$RUN/reference/compact_test" \
-  --output-dir /run/user/1016/experiments/current-view-training-new --gpu 0
-```
-
-The workflow snapshots source, trains one model, hashes the fixed checkpoint,
-and evaluates validation. Add `--test` explicitly to evaluate the fixed test split.
-The test result never selects or changes the checkpoint. `corrective --stage train`
-through `scripts/docker_run.py` provides the training stage alone.
-
-To recollect training data with the frozen parent, use the same base checkpoint
-and small parent head:
-
-```bash
-python3 scripts/docker_run.py --image gtsn-persistent:20261005-compact-only --gpu 0 corrective \
-  --stage collect \
-  --checkpoint /run/user/1016/experiments/gtsn_simplification_20261003/simplified.pt \
-  --initial-head "$RUN/initialization/parent_head.pt" \
-  --collection-episodes 800 --seed 20261005 \
-  --output-dir /run/user/1016/experiments/current-view-collection-new
-```
-
-For parallel collection, use `--shards 4 --shard 0` through `--shard 3`, each with
-its own GPU and output directory. Pass all four caches to training.
-
-## Source
-
-- `src/tsn/models/current_view_policy.py`: current geometry, four-frame carry,
-  bounded corrective residual, and strict loading of the retained legacy checkpoint.
-- `src/tsn/models/compact_policy.py`: shared compact controller and model loading.
-- `src/tsn/training/corrective.py`: corrective sampling, residual training, export,
-  and frozen-parent checks.
-- `src/tsn/training/sequence_recovery.py`: physics-verified training labels.
-- `src/tsn/cli/corrective.py`: collection and training entry points.
-- `scripts/run_corrective_study.py`: single-model training and evaluation workflow.
-- `scripts/verify_current_view.py`: comparison against immutable original source.
-
-The existing generic compact trainer (`train`) and optional hand-clearance
-controller remain available. Evaluation defaults to clearance for compatibility;
-always pass `--controller compact` for the retained corrective model's protocol.
-For a compact-head comparison on the same four corrective shards, run:
-
-```bash
-python3 scripts/run_compact_corrective_study.py \
-  --output-dir /run/user/1016/experiments/compact-corrective-new
-```
-
-This freezes the Pi3 backbone and fine-tunes the original compact head at `3e-5`
-for 20 epochs with the same corrective sampling and weighted action objective.
-It locks epoch 20 before evaluating both full splits on GPUs 0 and 1, and saves
-paired reports against the retained current-view model and original compact.
-The evaluated original compact checkpoint was removed during cleanup; the new
-run initializes from `gtsn_simplification_20261003/simplified.pt`.
-`report` provides paired comparisons and figures from completed evaluations.
-Historical research variants and their drivers have been removed from active code.
-`instructions/`, `documents/`, and the pre-existing nested `tsn_old/` checkout remain
-reference material; historical commands there may describe removed experiments.
+This refactor uses a new standalone checkpoint structure and fresh training
+path. Historical success rates belong to the archived implementation; the
+rewritten main model needs its own training and full validation/test evaluation.
+Use an archive's frozen `source/` for historical checkpoint replay, rather than
+loading an adapter into this main model.

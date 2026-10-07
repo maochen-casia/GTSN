@@ -5,9 +5,33 @@ from pathlib import Path
 import numpy as np
 from tsn.data.hdf5_dataset import padded_future
 from tsn.data.recovery_dataset import RecoveryDataset
+from tsn.data.history import build_history
+from tsn.data.navigation import sampling_weights
 
 
 class DataTests(unittest.TestCase):
+    def test_histories_are_causal_episode_local_and_reset_for_perturbations(self):
+        episode = np.array([0, 0, 0, 0, 0, 1, 1])
+        frames = np.array([0, 15, 30, 45, 20, 0, 15])
+        source = np.array([0, 0, 0, 0, 1, 0, 0])
+        history, ages, mask = build_history(episode, frames, source)
+        np.testing.assert_array_equal(history[3], [0, 1, 2, 3])
+        np.testing.assert_array_equal(ages[3], [45, 30, 15, 0])
+        self.assertEqual(mask[4].sum(), 1)
+        self.assertTrue(np.all(history[4] == 4))
+        self.assertTrue(np.all(episode[history] == episode[:, None]))
+        self.assertTrue(np.all(frames[history] <= frames[:, None]))
+
+    def test_source_and_route_mixtures_do_not_depend_on_group_sizes(self):
+        routes = np.array([0, 1, 1, 2, 2, 2]*2)
+        sources = np.repeat([0, 1], 6)
+        weights = sampling_weights(routes, sources).numpy()
+        self.assertAlmostEqual(weights[sources == 0].sum(), .65)
+        self.assertAlmostEqual(weights[sources == 1].sum(), .35)
+        for route, probability in enumerate((.2, .4, .4)):
+            self.assertAlmostEqual(weights[routes == route].sum(), probability)
+        with self.assertRaises(ValueError):sampling_weights(routes[:6], sources[:6])
+
     def test_near_terminal_future_keeps_hold_targets(self):
         q = np.arange(28, dtype=np.float32).reshape(4, 7)
         future, valid = padded_future(q, 2, 30)
@@ -31,4 +55,3 @@ class DataTests(unittest.TestCase):
             np.savez(path / "episode_211.npz", **arrays)
             with self.assertRaisesRegex(ValueError, "not terminal holds"):
                 RecoveryDataset(path, 30)
-

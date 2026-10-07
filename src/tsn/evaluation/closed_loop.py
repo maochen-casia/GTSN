@@ -16,12 +16,12 @@ from tsn.data.hdf5_dataset import validate_episode
 from tsn.evaluation.metrics import summarize_rollouts
 from tsn.features.maps import GeometryMaps
 from tsn.features.state import policy_state
-from tsn.models.compact_policy import RouteController
+from tsn.models.policy import NavigationPolicy
 from tsn.simulation.episode import EpisodeSimulation, orientation_error, quaternion_matrix
 
 
 @torch.inference_mode()
-def rollout(episode: str, route: str, root: Path, output: Path, model: RouteController,
+def rollout(episode: str, route: str, root: Path, output: Path, model: NavigationPolicy,
             maps: GeometryMaps, device: torch.device, options: dict[str, Any]) -> dict[str, Any]:
     """Execute live RGB predictions, reading only the initial expert robot state."""
     execute = int(options["execute_horizon"])
@@ -62,7 +62,7 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: RouteCont
     model.eval()
     if hasattr(model, 'reset_episode'):
         model.reset_episode()
-    execution_history, risk_history = [], []
+    execution_history = []
     with EpisodeSimulation(read_json(root / episode / "scene.json"), calibration,
                            camera_extrinsic, source_hw, expert_q[0], expert_ee[0], names, options) as simulation:
         try:
@@ -103,7 +103,6 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: RouteCont
                 replans += 1
                 chosen_execute = model.execution_horizon(execute) if hasattr(model, 'execution_horizon') else execute
                 execution_history.append(chosen_execute)
-                risk_history.append(getattr(model, 'last_risk', 0.0))
                 for action_index in range(min(chosen_execute, model.chunk_size, max_steps - steps)):
                     # All predictions in the chunk are relative to this replan's anchor.
                     target = anchor + chunk[action_index]
@@ -152,16 +151,13 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: RouteCont
                         T_B_E=np.asarray(ee_history), T_B_C=np.asarray(camera_history),
                         predicted_joint_targets=np.asarray(target_history).reshape(-1, 7),
                         reference_indices=np.asarray([], dtype=np.int64),
-                        execution_horizons=np.asarray(execution_history),
-                        geometry_risk=np.asarray(risk_history))
+                        execution_horizons=np.asarray(execution_history))
     write_json(directory / "metrics.json", result)
-    if hasattr(model, 'diagnostics'):
-        write_json(directory / 'policy_diagnostics.json', model.diagnostics)
     return result
 
 
 def evaluate_rollouts(ids: list[str], catalog: dict[str, str], root: Path, output: Path,
-                      model: RouteController, maps: GeometryMaps, device: torch.device,
+                      model: NavigationPolicy, maps: GeometryMaps, device: torch.device,
                       options: dict[str, Any]) -> dict[str, Any]:
     """Run each selected episode once and persist partial summaries after every episode."""
     if not ids:

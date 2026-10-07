@@ -1,1 +1,1 @@
-"""GTSN single-memory navigation policy."""
+"""Geometry-grounded navigation with persistent, embodied and uncertain geometry."""

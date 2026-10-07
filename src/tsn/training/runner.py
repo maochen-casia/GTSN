@@ -1,214 +1,167 @@
-"""Train the compact memory head on frozen Pi3 features, then export one model."""
-import copy
-import hashlib
+"""Fresh main-model training on expert routes and independent perturbations."""
 import time
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.nn import functional as F
-from torch.utils.data import ConcatDataset
+from torch.utils.data import WeightedRandomSampler
 
 from tsn.common.checkpoint import save_checkpoint
-from tsn.common.config import create_output, read_json, write_json
+from tsn.common.config import create_output, write_json
 from tsn.common.seed import require_device, seed_everything
-from tsn.data.history import build_history
-from tsn.data.hdf5_dataset import FrameDataset
 from tsn.data.loaders import make_loader
-from tsn.data.recovery_dataset import RecoveryDataset
-from tsn.data.splits import episode_catalog, validate_splits
+from tsn.data.navigation import NavigationDataset, sampling_weights
+from tsn.data.splits import make_splits, episode_catalog
+from tsn.features.maps import GeometryMaps
 from tsn.features.state import policy_state
-from tsn.models.clearance_policy import load_clearance_policy
-from tsn.training.losses import geometry_nll
+from tsn.models.c1_memory import PersistentGeometry, workspace_mask
+from tsn.models.policy import NavigationPolicy, metric_points
+from tsn.models.route import cartesian_proposal, goal_position
+from tsn.training.losses import geometry_nll, map_loss, point_quantile_loss
+
+
+def encode_observations(model, maps, batch):
+    """Past features are detached; the current RGB observation trains perception."""
+    count = len(batch['qpos'])
+    states = policy_state(batch['history_qpos'].flatten(0, 1),
+                          batch['history_goal_pose'].flatten(0, 1), maps.settings).reshape(count, 4, 16)
+    current = model.perception(batch['history_rgb'][:, -1], states[:, -1],
+                               batch['K'], batch['T_B_C'])
+    joint, tokens, geometry, dense = current
+    previous_tokens = tokens.new_zeros(count*3, 16, 768)
+    previous_geometry = geometry.new_zeros(count*3, 16, 6)
+    previous_points = torch.zeros(count*3, 400, 3, device=tokens.device)
+    valid = batch['history_mask'][:, :3].flatten()
+    if valid.any():
+        with torch.no_grad():
+            _, old_tokens, old_geometry, old_dense = model.perception(
+                batch['history_rgb'][:, :3].flatten(0, 1)[valid], states[:, :3].flatten(0, 1)[valid],
+                batch['history_K'][:, :3].flatten(0, 1)[valid], batch['history_T_B_C'][:, :3].flatten(0, 1)[valid])
+            previous_tokens[valid], previous_geometry[valid] = old_tokens, old_geometry
+            previous_points[valid] = metric_points(old_dense)
+    return dict(joint=joint, dense=dense, state=states[:, -1],
+        tokens=torch.cat((previous_tokens.reshape(count, 3, 16, 768), tokens[:, None]), 1),
+        geometry=torch.cat((previous_geometry.reshape(count, 3, 16, 6), geometry[:, None]), 1),
+        points=torch.cat((previous_points.reshape(count, 3, 400, 3), metric_points(dense)[:, None]), 1))
+
+
+def predict_route(model, maps, batch):
+    features = encode_observations(model, maps, batch)
+    with torch.autocast(device_type=batch['qpos'].device.type, enabled=False):
+        tcp = model.kinematics(batch['qpos'][:, :7])
+        target = model.kinematics(batch['qpos'][:, None, :7]+batch['target'][:, 4::5])[..., :3, 3]-tcp[:, None, :3, 3]
+    prediction, auxiliary = model.route(features['tokens'], features['geometry'], batch['history_T_B_C'],
+        batch['history_ages'], batch['history_mask'], features['state'], tcp)
+    return features, tcp, prediction, target, auxiliary
+
+
+def training_loss(model, maps, batch, weights):
+    features, tcp, prediction, target, auxiliary = predict_route(model, maps, batch)
+    with torch.autocast(device_type=tcp.device.type, enabled=False):
+        teacher = maps(batch['depth'], batch['K'], batch['T_B_C'], batch['goal_pose'][:, :3],
+                       batch['future_ee'], batch['valid_future'])
+        depth = F.interpolate(batch['depth'][:, None], teacher.shape[-2:], mode='nearest-exact')[:, 0]
+        observed = torch.isfinite(depth) & (depth >= maps.settings.near_m) & (depth <= maps.settings.far_m)
+        teacher_cells = F.adaptive_avg_pool2d(teacher[:, :3], (4, 4)).flatten(2).transpose(1, 2)
+        cells_valid = F.adaptive_avg_pool2d(observed[:, None].float(), (4, 4)).flatten(1) >= .999
+        points = features['points'][:, -1].detach()
+        radii = model.clearance.predict_error(model.route.visual(features['tokens'][:, -1].float()).detach(),
+                                              points, batch['T_B_C'], tcp)
+        teacher_points = metric_points(teacher)
+        point_valid = F.interpolate(observed[:, None].float(), (20, 20), mode='nearest-exact').flatten(1).bool()
+        point_valid &= workspace_mask(points) & ((points-tcp[:, None, :3, 3]).norm(dim=-1) > .07)
+        errors = (points-teacher_points).norm(dim=-1)
+        losses = dict(route=F.huber_loss(prediction, target, delta=.02),
+            joints=F.huber_loss(features['joint'].float(), batch['target'], delta=.02),
+            maps=map_loss(features['dense'], teacher, observed),
+            geometry=geometry_nll(auxiliary, teacher_cells, cells_valid),
+            uncertainty=point_quantile_loss(radii, errors, point_valid))
+        with torch.no_grad():
+            positions, rotations, _ = cartesian_proposal(prediction.detach(), features['joint'].detach(),
+                batch['qpos'][:, :7], tcp, goal_position(features['state']), model.kinematics)
+        trust_losses = []
+        for row in range(len(tcp)):
+            memory = PersistentGeometry(model.memory.capacity, model.memory.merge_radius, model.memory.voxel_size)
+            with torch.no_grad():
+                for slot in torch.where(batch['history_mask'][row])[0].tolist():
+                    past_tcp = model.kinematics(batch['history_qpos'][row, slot, :7])
+                    fingers = batch['history_qpos'][row, slot, 7:9]
+                    p = features['points'][row, slot].detach()
+                    u = model.clearance.predict_error(model.route.visual(features['tokens'][row:row+1, slot].float()),
+                        p[None], batch['history_T_B_C'][row:row+1, slot], past_tcp[None])[0]
+                    valid = workspace_mask(p) & ~model.embodiment.self_mask(p, past_tcp, fingers)
+                    step = int(batch['frame_index'][row]-batch['history_ages'][row, slot])
+                    memory.update(p, valid, u, step, past_tcp[:3, 3], goal_position(features['state'])[row])
+                surfaces, error = memory.query()
+            candidates, costs = model.clearance.costs(positions[row], rotations[row], tcp[row],
+                goal_position(features['state'])[row], surfaces, error,
+                batch['qpos'][row, 7:9], model.embodiment)
+            with torch.no_grad():
+                regret = (candidates[:, 4::5]-tcp[row, :3, 3]-target[row]).square().mean((-1, -2))
+                labels = (-regret/.015**2).softmax(-1)
+            trust_losses.append(-(labels*(-costs/.03).log_softmax(-1)).sum())
+        losses['trust'] = torch.stack(trust_losses).mean()
+    return sum(weights[name]*value for name, value in losses.items()), losses
 
 
 @torch.inference_mode()
-def cache_features(root, model, maps, cfg, splits, options, device):
-    """Cache train/validation observations once with the frozen Pi3 backbone."""
-    model.eval().requires_grad_(False)
-    data_root = Path(cfg['benchmark']['root'])
-    catalog = episode_catalog(data_root)
-    validate_splits(splits, catalog)
-    for partition in ('train', 'validation'):
-        directory = root/'cache'/partition
-        directory.mkdir(parents=True, exist_ok=False)
-        ids = splits[partition]
-        expert = FrameDataset(data_root, ids, catalog, 30,
-                              frame_stride=2 if partition == 'train' else 1, include_rgb=True)
-        recovery = None
-        if partition == 'train':
-            recovery = RecoveryDataset(Path(cfg['train']['recovery_sources'][0]['path']), 30, include_rgb=True)
-            if not set(recovery.route_by_episode) <= set(ids):
-                raise ValueError('Recovery data overlaps held-out episodes')
-        dataset = ConcatDataset([expert, recovery]) if recovery is not None else expert
-        if recovery is not None and any(catalog[ep] != route for ep, route in recovery.route_by_episode.items()):
-            raise ValueError('Recovery route labels differ from the benchmark')
-        specs = {'tokens': ((16, 768), np.float16), 'geometry': ((16, 6), np.float32),
-                 'teacher': ((16, 3), np.float32), 'geometry_valid': ((16,), bool),
-                 'state': ((16,), np.float32),
-                 'pose': ((4, 4), np.float32), 'waypoint': ((6, 3), np.float32),
-                 'tcp': ((4, 4), np.float32), 'route': ((), np.int64),
-                 'episode': ((), np.int64), 'frame': ((), np.int64), 'source': ((), np.int64)}
-        arrays = {k: np.lib.format.open_memmap(directory/f'{k}.npy', mode='w+', dtype=d,
-                                              shape=(len(dataset), *s)) for k, (s, d) in specs.items()}
-        lookup = {ep: i for i, ep in enumerate(ids)}
-        batches = make_loader(dataset, dict(device=str(device), batch_size=options['cache_batch_size'], num_workers=options['num_workers']), False, options['seed'])
-        offset, started = 0, time.monotonic()
-        for raw in batches:
-            b = {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in raw.items()}
-            state = policy_state(b['qpos'], b['goal_pose'], maps.settings)
-            _, tokens, geometry = model.backbone(b['rgb'], state, b['K'], b['T_B_C'], return_features=True)
-            teacher = maps(b['depth'], b['K'], b['T_B_C'], b['goal_pose'][:, :3], b['future_ee'], b['valid_future'])
-            depth = F.interpolate(b['depth'][:, None], (maps.settings.height, maps.settings.width), mode='nearest-exact')
-            valid = torch.isfinite(depth) & (depth >= maps.settings.near_m) & (depth <= maps.settings.far_m)
-            tcp = model.kinematics(b['qpos'][:, :7])
-            waypoint = model.kinematics(b['qpos'][:, None, :7]+b['target'][:, 4::5])[..., :3, 3]-tcp[:, None, :3, 3]
-            values = dict(tokens=tokens, geometry=geometry, state=state,
-                          pose=b['T_B_C'], waypoint=waypoint, tcp=tcp, route=b['route'], frame=b['frame_index'],
-                          geometry_valid=F.adaptive_avg_pool2d(valid.float(), (4, 4)).flatten(1) >= .999,
-                          teacher=F.adaptive_avg_pool2d(teacher[:, :3], (4, 4)).flatten(2).transpose(1, 2))
-            size = len(state)
-            for key, value in values.items():
-                arrays[key][offset:offset+size] = value.float().cpu().numpy() if value.is_floating_point() else value.cpu().numpy()
-            arrays['episode'][offset:offset+size] = [lookup[x.removesuffix('_recovery')] for x in raw['episode_id']]
-            arrays['source'][offset:offset+size] = np.arange(offset, offset+size) >= len(expert)
-            offset += size
-            if offset % 2560 == 0 or offset == len(dataset):
-                write_json(root/'status.json', dict(state='running', stage='cache', partition=partition, frames=offset, total=len(dataset)))
-                print(f'cache {partition} {offset}/{len(dataset)} {time.monotonic()-started:.1f}s', flush=True)
-        for value in arrays.values():
-            value.flush()
-        for key, value in zip(('history', 'ages', 'mask'), build_history(arrays['episode'], arrays['frame'], arrays['source'])):
-            np.save(directory/f'{key}.npy', value)
-        write_json(directory/'metadata.json', dict(samples=len(dataset), expert_samples=len(expert),
-                   episode_ids=ids, test_data_cached=False))
-        expert.close()
-        if recovery is not None:
-            recovery.close()
-
-
-class FeatureCache:
-    """Read only the requested batches from disk; do not put the entire cache on GPU."""
-    def __init__(self, directory, device):
-        self.arrays = {path.stem: np.load(path, mmap_mode='r', allow_pickle=False)
-                       for path in directory.glob('*.npy')}
-        self.device = device
-
-    def __len__(self):
-        return len(self.arrays['state'])
-
-    def tensor(self, name, indices):
-        return torch.from_numpy(np.array(self.arrays[name][indices], copy=True)).to(self.device)
-
-    def inputs(self, indices):
-        history = self.arrays['history'][indices]
-        return (self.tensor('tokens', history), self.tensor('geometry', history),
-                self.tensor('pose', history), self.tensor('ages', indices),
-                self.tensor('mask', indices), self.tensor('state', indices), self.tensor('tcp', indices))
-
-
-def sampling_weights(routes, sources):
-    """Match the experiment's 65:35 expert/recovery mix and 20:40:40 routes."""
-    weights = np.zeros(len(routes), dtype=np.float64)
-    for source, fraction in enumerate((.65, .35)):
-        for route, probability in enumerate((.2, .4, .4)):
-            selected = (sources == source) & (routes == route)
-            if not selected.any():
-                raise ValueError('Each expert/recovery source must contain all three routes')
-            weights[selected] = fraction * probability / selected.sum()
-    if not np.all(weights > 0):
-        raise ValueError('Unknown source or route label')
-    return torch.from_numpy(weights)
-
-
-@torch.inference_mode()
-def validation_rmse(head, data, batch_size):
-    head.eval()
+def validation_rmse(model, maps, loader, device):
+    model.eval()
     squared, count = 0., 0
-    for start in range(0, len(data), batch_size):
-        indices = np.arange(start, min(start + batch_size, len(data)))
-        with torch.autocast(data.device.type, dtype=torch.bfloat16, enabled=data.device.type == 'cuda'):
-            prediction, _ = head(*data.inputs(indices))
-        squared += float((prediction - data.tensor('waypoint', indices)).square().sum())
-        count += prediction.numel()
-    if count == 0:
-        raise ValueError('Validation cache is empty')
-    return (squared / count) ** .5
+    for raw in loader:
+        batch = {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in raw.items()}
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == 'cuda'):
+            _, _, prediction, target, _ = predict_route(model, maps, batch)
+        squared += float((prediction-target).square().sum()); count += prediction.numel()
+    if not count:
+        raise ValueError('Empty validation data')
+    return (squared/count)**.5
 
 
-def fit_head(head, training, validation, options, output, expert_samples):
-    """Select the head by validation waypoint RMSE, including its initial weights."""
-    head.requires_grad_(True)
-    weights = sampling_weights(training.arrays['route'], training.arrays['source'])
-    optimizer = torch.optim.AdamW(head.parameters(), lr=options['learning_rate'], weight_decay=options['weight_decay'])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, options['epochs'])
-    generator = torch.Generator().manual_seed(options['seed'])
-    batch_size = options['batch_size']
-    best = validation_rmse(head, validation, batch_size)
-    selected = 0
-    records = [dict(epoch=0, validation_rmse_m=best)]
-    torch.save(head.state_dict(), output / 'head.pt')
-    for epoch in range(1, options['epochs'] + 1):
-        started = time.monotonic()
-        order = torch.multinomial(weights, expert_samples, replacement=True, generator=generator).numpy()
-        head.train()
-        total = 0.
-        for start in range(0, len(order), batch_size):
-            indices = order[start:start + batch_size]
-            optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(training.device.type, dtype=torch.bfloat16, enabled=training.device.type == 'cuda'):
-                prediction, auxiliary = head(*training.inputs(indices))
-                loss = F.huber_loss(prediction, training.tensor('waypoint', indices), delta=.02)
-                loss = loss + .001 * geometry_nll(auxiliary, training.tensor('teacher', indices),
-                                                training.tensor('geometry_valid', indices))
-            if not torch.isfinite(loss):
-                raise RuntimeError('Non-finite training loss')
-            loss.backward()
-            if any(p.grad is None or not torch.isfinite(p.grad).all() for p in head.parameters()):
-                raise RuntimeError('Missing or non-finite compact-head gradients')
-            torch.nn.utils.clip_grad_norm_(head.parameters(), 1.)
-            optimizer.step()
-            total += float(loss.detach()) * len(indices)
-        score = validation_rmse(head, validation, batch_size)
-        if score < best:
-            best, selected = score, epoch
-            torch.save(head.state_dict(), output / 'head.pt')
-        scheduler.step()
-        record = dict(epoch=epoch, validation_rmse_m=score, loss=total / len(order),
-                      sampling_sha256=hashlib.sha256(order.tobytes()).hexdigest(),
-                      seconds=time.monotonic() - started)
-        records.append(record)
-        write_json(output / 'epochs.json', records)
-        print(record, flush=True)
-    head.load_state_dict(torch.load(output / 'head.pt', map_location=training.device, weights_only=True))
-    return dict(selected_epoch=selected, best_validation_rmse_m=best, completed_epochs=options['epochs'])
-
-
-def train(checkpoint_path, output, options):
+def train(config, output):
+    options = config['train']
     device = require_device(options['device'])
     seed_everything(options['seed'])
-    model, maps, checkpoint = load_clearance_policy(checkpoint_path, device, allow_training_source=True)
-    config, splits = copy.deepcopy(checkpoint['config']), checkpoint['splits']
-    recoveries = config['train'].get('recovery_sources', [])
-    if len(recoveries) != 1:
-        raise ValueError('Compact training requires one existing recovery source')
-    config['train'] = {**options, 'recovery_sources': recoveries,
-                       'checkpoint_selection': 'validation_waypoint_rmse', 'frozen_backbone': True}
     create_output(output)
-    write_json(output / 'config.json', config)
-    write_json(output / 'splits.json', splits)
-    write_json(output / 'protocol.json', dict(initial_checkpoint=str(checkpoint_path.resolve()),
-               variant='single_memory', frozen_backbone=True, test_used_for_selection=False))
-    cache_features(output, model, maps, config, splits, options, device)
-    model.backbone.cpu()
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
-    training = FeatureCache(output / 'cache/train', device)
-    validation = FeatureCache(output / 'cache/validation', device)
-    samples = read_json(output / 'cache/train/metadata.json')['expert_samples']
-    summary = fit_head(model.head, training, validation, options, output, samples)
-    save_checkpoint(output / 'best.pt', dict(format_version=1, architecture='compact_consensus',
-                    variant='single_memory', config=config, splits=splits,
-                    backbone=model.backbone.state_dict(), head=model.head.cpu().state_dict(), **summary))
-    write_json(output / 'summary.json', {**summary, 'variant': 'single_memory', 'frozen_backbone': True})
-    write_json(output / 'status.json', dict(state='complete', **summary))
+    splits = make_splits(config['benchmark'])
+    catalog = episode_catalog(Path(config['benchmark']['root']))
+    root = Path(config['benchmark']['root'])
+    training = NavigationDataset(root, splits['train'], catalog, options['frame_stride'], options['recovery_root'])
+    validation = NavigationDataset(root, splits['validation'], catalog, options['validation_frame_stride'])
+    model = NavigationPolicy(config['model']).to(device)
+    maps = GeometryMaps(config['model']['maps']).to(device)
+    generator = torch.Generator().manual_seed(options['seed'])
+    sampler = WeightedRandomSampler(sampling_weights(training.route, training.source),
+                                   options['draws_per_epoch'], replacement=True, generator=generator)
+    train_loader = make_loader(training, options, True, options['seed'], sampler=sampler)
+    val_loader = make_loader(validation, options, False, options['seed'])
+    parameters = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(parameters, lr=options['learning_rate'], weight_decay=options['weight_decay'])
+    write_json(output/'config.json', config); write_json(output/'splits.json', splits)
+    best, records = float('inf'), []
+    try:
+        for epoch in range(1, options['epochs']+1):
+            model.train(); started = time.monotonic(); total = 0.; rows = 0
+            for raw in train_loader:
+                batch = {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in raw.items()}
+                optimizer.zero_grad(set_to_none=True)
+                with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == 'cuda'):
+                    loss, _ = training_loss(model, maps, batch, options['loss_weights'])
+                if not torch.isfinite(loss):raise RuntimeError('Nonfinite training loss')
+                loss.backward()
+                norm = torch.nn.utils.clip_grad_norm_(parameters, options['gradient_clip_norm'])
+                if not torch.isfinite(norm):raise RuntimeError('Nonfinite gradients')
+                optimizer.step()
+                size = len(batch['qpos']); total += float(loss.detach())*size; rows += size
+            score = validation_rmse(model, maps, val_loader, device)
+            if score < best:
+                best = score
+                save_checkpoint(output/'best.pt', dict(format_version=1, architecture='gtsn_main',
+                    config=config, splits=splits, model={k: v.detach().cpu() for k, v in model.state_dict().items()},
+                    selected_epoch=epoch, validation_rmse_m=score))
+            record = dict(epoch=epoch, loss=total/rows, validation_rmse_m=score, seconds=time.monotonic()-started)
+            records.append(record); write_json(output/'epochs.json', records); print(record, flush=True)
+        write_json(output/'complete.json', dict(epochs=options['epochs'], best_validation_rmse_m=best,
+            navigation_initialized_from_scratch=True, test_used_for_selection=False))
+    finally:
+        training.close(); validation.close()

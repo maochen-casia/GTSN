@@ -1,4 +1,4 @@
-"""Run hand-clearance training, evaluation, reporting, or tests in Docker."""
+"""Run main-model training, evaluation or regression tests in Docker."""
 import argparse
 import os
 from pathlib import Path
@@ -7,14 +7,14 @@ import subprocess
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--image', default='gtsn-compact:latest')
-    parser.add_argument('--gpu', default='all', help='GPU ID, comma-separated IDs, or all')
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument('--image', default='gtsn-persistent:20261005-compact-only')
+    parser.add_argument('--gpu', default='0', help='GPU ID, comma-separated IDs, or all')
     parser.add_argument('--cpu', action='store_true')
     parser.add_argument('--print-command', action='store_true')
     parser.add_argument('--source-snapshot', type=Path,
                         help='Run an existing source snapshot within the project or experiment storage')
-    parser.add_argument('command', choices=('train', 'evaluate', 'report', 'geometry_figure', 'corrective', 'geometric_energy', 'geometric_energy_report', 'c1_report', 'c1_verify', 'uncertainty', 'c3_report', 'c2_verify', 'c2_report', 'test'))
+    parser.add_argument('command', choices=('train', 'evaluate', 'test'))
     args, extra = parser.parse_known_args()
     root = Path(__file__).resolve().parents[1]
     snapshot = args.source_snapshot.resolve() if args.source_snapshot else root

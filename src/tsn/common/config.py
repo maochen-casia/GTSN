@@ -37,8 +37,3 @@ def create_output(path: Path) -> None:
     if path.exists() and (not path.is_dir() or any(path.iterdir())):
         raise FileExistsError(f'Output directory is not empty: {path}')
     path.mkdir(parents=True, exist_ok=True)
-
-
-def default_config(kind: str, filename: str) -> Path:
-    return PROJECT_ROOT / "configs" / kind / filename
-
