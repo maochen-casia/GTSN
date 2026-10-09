@@ -8,7 +8,9 @@ import subprocess
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument('--image', default='gtsn-persistent:20261005-compact-only')
+    parser.add_argument('--image', default='gtsn-experiment:20261009-clean')
+    parser.add_argument('--storage-root', type=Path, default=Path('/home/datasets_v2/chenmao'),
+                        help='Transferred data mounted at its real path and /run/user/1016')
     parser.add_argument('--gpu', default='0', help='GPU ID, comma-separated IDs, or all')
     parser.add_argument('--cpu', action='store_true')
     parser.add_argument('--processes', type=int, default=1, help='Distributed training process count')
@@ -20,6 +22,7 @@ def main():
     if args.processes <= 0 or (args.processes != 1 and args.command != 'train'):
         parser.error('Multiple processes are supported for training only')
     root = Path(__file__).resolve().parents[1]
+    transferred = args.storage_root.resolve()
     snapshot = args.source_snapshot.resolve() if args.source_snapshot else root
     if args.source_snapshot and (not (snapshot/'src/tsn').is_dir() or
             not any(snapshot.is_relative_to(base) for base in (root, Path('/run/user/1016/experiments')))):
@@ -36,7 +39,11 @@ def main():
     if root != Path('/workspace'):
         command += ['--mount', f'type=bind,source={root},target={root},readonly']
     storage = Path('/run/user/1016')
-    if storage.is_dir():
+    if transferred.is_dir() and transferred != storage:
+        # Preserve paths embedded in historical configs and checkpoint metadata.
+        command += ['--mount', f'type=bind,source={transferred},target={transferred},readonly',
+                    '--mount', f'type=bind,source={transferred},target={storage},readonly']
+    elif storage.is_dir():
         command += ['--mount', f'type=bind,source={storage},target={storage},readonly']
     if args.command != 'test':
         output_parser = argparse.ArgumentParser(add_help=False)

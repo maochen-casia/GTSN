@@ -10,6 +10,20 @@ from unittest.mock import patch
 
 
 class LauncherTests(unittest.TestCase):
+    def test_transferred_storage_is_read_only_at_both_paths(self):
+        root = Path(__file__).resolve().parents[1]
+        script = root / 'scripts/docker_run.py'
+        storage = Path('/home/datasets_v2/chenmao')
+        arguments = [str(script), '--print-command', '--storage-root', str(storage), '--cpu', 'test']
+        output = io.StringIO()
+        with patch.object(sys, 'argv', arguments), patch('pathlib.Path.is_dir', return_value=True), \
+             contextlib.redirect_stdout(output):
+            runpy.run_path(str(script), run_name='__main__')
+        command = shlex.split(output.getvalue())
+        self.assertIn(f'type=bind,source={storage},target={storage},readonly', command)
+        self.assertIn(f'type=bind,source={storage},target=/run/user/1016,readonly', command)
+        self.assertNotIn('type=bind,source=/run/user/1016,target=/run/user/1016,readonly', command)
+
     def test_distributed_training_uses_localhost_in_offline_container(self):
         root = Path(__file__).resolve().parents[1]
         script = root/'scripts/docker_run.py'

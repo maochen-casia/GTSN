@@ -1,0 +1,8 @@
+[W1009 03:29:13.174858042 socket.cpp:204] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+[W1009 03:29:13.175029004 socket.cpp:204] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+[W1009 03:29:16.541906594 socket.cpp:204] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+[W1009 03:29:16.542083225 socket.cpp:204] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+[W1009 03:29:16.774733238 socket.cpp:204] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+[W1009 03:29:16.774893159 socket.cpp:204] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+Rank 1: NCCL all-reduce passed
+Rank 0: NCCL all-reduce passed

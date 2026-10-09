@@ -1,0 +1,642 @@
+[
+  {
+    "name": "absl-py",
+    "version": "2.5.0"
+  },
+  {
+    "name": "archspec",
+    "version": "0.2.5"
+  },
+  {
+    "name": "arm_pytorch_utilities",
+    "version": "0.5.0"
+  },
+  {
+    "name": "asttokens",
+    "version": "3.0.0"
+  },
+  {
+    "name": "astunparse",
+    "version": "1.6.3"
+  },
+  {
+    "name": "attrs",
+    "version": "25.1.0"
+  },
+  {
+    "name": "beautifulsoup4",
+    "version": "4.12.3"
+  },
+  {
+    "name": "boltons",
+    "version": "24.0.0"
+  },
+  {
+    "name": "Brotli",
+    "version": "1.1.0"
+  },
+  {
+    "name": "certifi",
+    "version": "2024.12.14"
+  },
+  {
+    "name": "cffi",
+    "version": "1.17.1"
+  },
+  {
+    "name": "chardet",
+    "version": "5.2.0"
+  },
+  {
+    "name": "charset-normalizer",
+    "version": "3.4.1"
+  },
+  {
+    "name": "click",
+    "version": "8.1.8"
+  },
+  {
+    "name": "cloudpickle",
+    "version": "3.1.2"
+  },
+  {
+    "name": "cmake",
+    "version": "3.31.4"
+  },
+  {
+    "name": "colorama",
+    "version": "0.4.6"
+  },
+  {
+    "name": "conda",
+    "version": "25.1.0"
+  },
+  {
+    "name": "conda-build",
+    "version": "25.1.1"
+  },
+  {
+    "name": "conda_index",
+    "version": "0.5.0"
+  },
+  {
+    "name": "conda-libmamba-solver",
+    "version": "25.1.1"
+  },
+  {
+    "name": "conda-package-handling",
+    "version": "2.4.0"
+  },
+  {
+    "name": "conda_package_streaming",
+    "version": "0.11.0"
+  },
+  {
+    "name": "contourpy",
+    "version": "1.3.3"
+  },
+  {
+    "name": "cycler",
+    "version": "0.12.1"
+  },
+  {
+    "name": "dacite",
+    "version": "1.9.2"
+  },
+  {
+    "name": "decorator",
+    "version": "5.1.1"
+  },
+  {
+    "name": "defusedxml",
+    "version": "0.7.1"
+  },
+  {
+    "name": "distro",
+    "version": "1.9.0"
+  },
+  {
+    "name": "dnspython",
+    "version": "2.7.0"
+  },
+  {
+    "name": "docstring_parser",
+    "version": "0.18.0"
+  },
+  {
+    "name": "exceptiongroup",
+    "version": "1.2.2"
+  },
+  {
+    "name": "executing",
+    "version": "2.1.0"
+  },
+  {
+    "name": "expecttest",
+    "version": "0.3.0"
+  },
+  {
+    "name": "Farama-Notifications",
+    "version": "0.0.6"
+  },
+  {
+    "name": "filelock",
+    "version": "3.17.0"
+  },
+  {
+    "name": "fonttools",
+    "version": "4.66.1"
+  },
+  {
+    "name": "freetype-py",
+    "version": "2.5.1"
+  },
+  {
+    "name": "frozendict",
+    "version": "2.4.6"
+  },
+  {
+    "name": "fsspec",
+    "version": "2024.12.0"
+  },
+  {
+    "name": "gitdb",
+    "version": "4.0.12"
+  },
+  {
+    "name": "GitPython",
+    "version": "3.2.0"
+  },
+  {
+    "name": "gymnasium",
+    "version": "1.4.0"
+  },
+  {
+    "name": "h2",
+    "version": "4.1.0"
+  },
+  {
+    "name": "h5py",
+    "version": "3.14.0"
+  },
+  {
+    "name": "hf-xet",
+    "version": "1.7.0"
+  },
+  {
+    "name": "hpack",
+    "version": "4.0.0"
+  },
+  {
+    "name": "huggingface-hub",
+    "version": "0.36.0"
+  },
+  {
+    "name": "hyperframe",
+    "version": "6.0.1"
+  },
+  {
+    "name": "hypothesis",
+    "version": "6.124.7"
+  },
+  {
+    "name": "idna",
+    "version": "3.10"
+  },
+  {
+    "name": "imageio",
+    "version": "2.37.0"
+  },
+  {
+    "name": "imageio-ffmpeg",
+    "version": "0.6.0"
+  },
+  {
+    "name": "importlib_resources",
+    "version": "6.5.2"
+  },
+  {
+    "name": "ipython",
+    "version": "8.31.0"
+  },
+  {
+    "name": "jedi",
+    "version": "0.19.2"
+  },
+  {
+    "name": "Jinja2",
+    "version": "3.1.5"
+  },
+  {
+    "name": "jsonpatch",
+    "version": "1.33"
+  },
+  {
+    "name": "jsonpointer",
+    "version": "3.0.0"
+  },
+  {
+    "name": "jsonschema",
+    "version": "4.23.0"
+  },
+  {
+    "name": "jsonschema-specifications",
+    "version": "2024.10.1"
+  },
+  {
+    "name": "kiwisolver",
+    "version": "1.5.1"
+  },
+  {
+    "name": "libarchive-c",
+    "version": "5.1"
+  },
+  {
+    "name": "libmambapy",
+    "version": "2.0.5"
+  },
+  {
+    "name": "lief",
+    "version": "0.14.1"
+  },
+  {
+    "name": "lintrunner",
+    "version": "0.12.7"
+  },
+  {
+    "name": "lxml",
+    "version": "6.1.3"
+  },
+  {
+    "name": "mani_skill",
+    "version": "3.0.1"
+  },
+  {
+    "name": "MarkupSafe",
+    "version": "3.0.2"
+  },
+  {
+    "name": "matplotlib",
+    "version": "3.11.2"
+  },
+  {
+    "name": "matplotlib-inline",
+    "version": "0.1.7"
+  },
+  {
+    "name": "menuinst",
+    "version": "2.2.0"
+  },
+  {
+    "name": "more-itertools",
+    "version": "10.6.0"
+  },
+  {
+    "name": "mplib",
+    "version": "0.1.1"
+  },
+  {
+    "name": "mpmath",
+    "version": "1.3.0"
+  },
+  {
+    "name": "networkx",
+    "version": "3.4.2"
+  },
+  {
+    "name": "ninja",
+    "version": "1.11.1.3"
+  },
+  {
+    "name": "numpy",
+    "version": "1.26.4"
+  },
+  {
+    "name": "nvidia-cublas-cu12",
+    "version": "12.4.5.8"
+  },
+  {
+    "name": "nvidia-cuda-cupti-cu12",
+    "version": "12.4.127"
+  },
+  {
+    "name": "nvidia-cuda-nvrtc-cu12",
+    "version": "12.4.127"
+  },
+  {
+    "name": "nvidia-cuda-runtime-cu12",
+    "version": "12.4.127"
+  },
+  {
+    "name": "nvidia-cudnn-cu12",
+    "version": "9.1.0.70"
+  },
+  {
+    "name": "nvidia-cufft-cu12",
+    "version": "11.2.1.3"
+  },
+  {
+    "name": "nvidia-curand-cu12",
+    "version": "10.3.5.147"
+  },
+  {
+    "name": "nvidia-cusolver-cu12",
+    "version": "11.6.1.9"
+  },
+  {
+    "name": "nvidia-cusparse-cu12",
+    "version": "12.3.1.170"
+  },
+  {
+    "name": "nvidia-cusparselt-cu12",
+    "version": "0.6.2"
+  },
+  {
+    "name": "nvidia-ml-py",
+    "version": "13.615.71"
+  },
+  {
+    "name": "nvidia-nccl-cu12",
+    "version": "2.21.5"
+  },
+  {
+    "name": "nvidia-nvjitlink-cu12",
+    "version": "12.4.127"
+  },
+  {
+    "name": "nvidia-nvtx-cu12",
+    "version": "12.4.127"
+  },
+  {
+    "name": "opencv-python",
+    "version": "4.11.0.86"
+  },
+  {
+    "name": "optree",
+    "version": "0.14.0"
+  },
+  {
+    "name": "packaging",
+    "version": "24.2"
+  },
+  {
+    "name": "parso",
+    "version": "0.8.4"
+  },
+  {
+    "name": "pexpect",
+    "version": "4.9.0"
+  },
+  {
+    "name": "pickleshare",
+    "version": "0.7.5"
+  },
+  {
+    "name": "pillow",
+    "version": "11.3.0"
+  },
+  {
+    "name": "pip",
+    "version": "24.3.1"
+  },
+  {
+    "name": "pkginfo",
+    "version": "1.12.0"
+  },
+  {
+    "name": "pkgutil_resolve_name",
+    "version": "1.3.10"
+  },
+  {
+    "name": "platformdirs",
+    "version": "4.3.6"
+  },
+  {
+    "name": "pluggy",
+    "version": "1.5.0"
+  },
+  {
+    "name": "prompt_toolkit",
+    "version": "3.0.50"
+  },
+  {
+    "name": "psutil",
+    "version": "6.1.1"
+  },
+  {
+    "name": "ptyprocess",
+    "version": "0.7.0"
+  },
+  {
+    "name": "pure_eval",
+    "version": "0.2.3"
+  },
+  {
+    "name": "pycollada",
+    "version": "0.9.2"
+  },
+  {
+    "name": "pycosat",
+    "version": "0.6.6"
+  },
+  {
+    "name": "pycparser",
+    "version": "2.22"
+  },
+  {
+    "name": "pyglet",
+    "version": "1.5.31"
+  },
+  {
+    "name": "Pygments",
+    "version": "2.19.1"
+  },
+  {
+    "name": "PyOpenGL",
+    "version": "3.1.10"
+  },
+  {
+    "name": "pyparsing",
+    "version": "3.3.3"
+  },
+  {
+    "name": "pyperclip",
+    "version": "1.11.0"
+  },
+  {
+    "name": "pyrender",
+    "version": "0.1.45"
+  },
+  {
+    "name": "PySocks",
+    "version": "1.7.1"
+  },
+  {
+    "name": "python-dateutil",
+    "version": "2.9.0.post0"
+  },
+  {
+    "name": "python-etcd",
+    "version": "0.4.5"
+  },
+  {
+    "name": "pytorch-kinematics",
+    "version": "0.7.6"
+  },
+  {
+    "name": "pytorch-seed",
+    "version": "0.2.0"
+  },
+  {
+    "name": "pytz",
+    "version": "2024.2"
+  },
+  {
+    "name": "PyYAML",
+    "version": "6.0.2"
+  },
+  {
+    "name": "referencing",
+    "version": "0.36.2"
+  },
+  {
+    "name": "requests",
+    "version": "2.32.3"
+  },
+  {
+    "name": "rpds-py",
+    "version": "0.22.3"
+  },
+  {
+    "name": "ruamel.yaml",
+    "version": "0.18.10"
+  },
+  {
+    "name": "ruamel.yaml.clib",
+    "version": "0.2.8"
+  },
+  {
+    "name": "safetensors",
+    "version": "0.6.2"
+  },
+  {
+    "name": "sapien",
+    "version": "3.0.3"
+  },
+  {
+    "name": "scipy",
+    "version": "1.15.3"
+  },
+  {
+    "name": "setuptools",
+    "version": "75.8.0"
+  },
+  {
+    "name": "six",
+    "version": "1.17.0"
+  },
+  {
+    "name": "smmap",
+    "version": "5.0.3"
+  },
+  {
+    "name": "sortedcontainers",
+    "version": "2.4.0"
+  },
+  {
+    "name": "soupsieve",
+    "version": "2.5"
+  },
+  {
+    "name": "stack_data",
+    "version": "0.6.3"
+  },
+  {
+    "name": "sympy",
+    "version": "1.13.1"
+  },
+  {
+    "name": "tabulate",
+    "version": "0.10.0"
+  },
+  {
+    "name": "toppra",
+    "version": "0.6.10"
+  },
+  {
+    "name": "torch",
+    "version": "2.6.0+cu124"
+  },
+  {
+    "name": "torchaudio",
+    "version": "2.6.0+cu124"
+  },
+  {
+    "name": "torchelastic",
+    "version": "0.2.2"
+  },
+  {
+    "name": "torchvision",
+    "version": "0.21.0+cu124"
+  },
+  {
+    "name": "tqdm",
+    "version": "4.67.1"
+  },
+  {
+    "name": "traitlets",
+    "version": "5.14.3"
+  },
+  {
+    "name": "transforms3d",
+    "version": "0.4.2"
+  },
+  {
+    "name": "trimesh",
+    "version": "4.6.8"
+  },
+  {
+    "name": "triton",
+    "version": "3.2.0"
+  },
+  {
+    "name": "truststore",
+    "version": "0.10.0"
+  },
+  {
+    "name": "typeguard",
+    "version": "4.6.0"
+  },
+  {
+    "name": "types-dataclasses",
+    "version": "0.6.6"
+  },
+  {
+    "name": "typing_extensions",
+    "version": "4.16.0"
+  },
+  {
+    "name": "tyro",
+    "version": "1.0.16"
+  },
+  {
+    "name": "urllib3",
+    "version": "2.3.0"
+  },
+  {
+    "name": "wcwidth",
+    "version": "0.2.13"
+  },
+  {
+    "name": "wheel",
+    "version": "0.45.1"
+  },
+  {
+    "name": "zipp",
+    "version": "3.21.0"
+  },
+  {
+    "name": "zstandard",
+    "version": "0.23.0"
+  }
+]

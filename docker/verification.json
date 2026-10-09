@@ -1,0 +1,30 @@
+{
+  "base_digest": "sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee",
+  "images": [
+    {
+      "tag": "gtsn-foundation:torch2.6.0-cu124-20261009",
+      "id": "sha256:2cf356e3a7655394400ab1dab30102ca49d8c4f5eb1f2ecc44817a222aec2c06",
+      "size_bytes": 6055236413
+    },
+    {
+      "tag": "gtsn-runtime:torch2.6.0-cu124-20261009",
+      "id": "sha256:a6970ee47474a0a2fe81f430fdeba1c2d9fd71814208d6eb73117566a893c760",
+      "size_bytes": 7353488625
+    },
+    {
+      "tag": "gtsn-experiment:20261009-clean",
+      "id": "sha256:925123da4375465a5995476f922dbd083e836076c651f1fe030b55e5b88751c3",
+      "size_bytes": 7382176375
+    }
+  ],
+  "pre_existing_image_records_unchanged": 27,
+  "regression_tests_passed": 34,
+  "gpu_training_optimizer_step_passed": true,
+  "closed_loop_smoke": {
+    "episode": "episode_006",
+    "control_steps": 15,
+    "passed": true
+  },
+  "video_encoder_passed": true,
+  "two_gpu_nccl_all_reduce_passed": true
+}

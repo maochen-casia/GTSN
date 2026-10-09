@@ -1,0 +1,8 @@
+GPU: NVIDIA A800-SXM4-80GB torch: 2.6.0+cu124 CUDA: 12.4
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+/opt/conda/lib/python3.11/site-packages/sapien/_vulkan_tricks.py:78: UserWarning: Failed to find Vulkan ICD file. This is probably due to an incorrect or partial installation of the NVIDIA driver. SAPIEN will attempt to provide an ICD file anyway but it may not work.
+  warn(
+/opt/conda/lib/python3.11/site-packages/sapien/_vulkan_tricks.py:100: UserWarning: Failed to find glvnd ICD file. This is probably due to an incorrect or partial installation of the NVIDIA driver. SAPIEN will attempt to provide an ICD file anyway but it may not work.
+  warn(
+Real RGB training forward/backward/AdamW step passed: 0.16304948925971985
+Real closed-loop observation, inference and physics passed: episode_006 15 steps

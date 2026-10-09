@@ -1,5 +1,13 @@
 # GTSN: geometry-grounded table scene navigation
 
+For the transferred machine, use the clean image `gtsn-experiment:20261009-clean`
+(the launcher default). [Runtime setup](documents/docker_runtime.md) documents
+the reusable CUDA/PyTorch foundation, build commands, and training/evaluation.
+The launcher maps `/home/datasets_v2/chenmao` to the historical storage path
+read-only; save new outputs under this checkout's `runs/` directory. Commands
+below referencing old image tags or `/run/user/1016` output storage describe
+the original machine.
+
 This checkout contains one main model and its training, closed-loop validation
 and test paths. The policy composes three geometry modules:
 

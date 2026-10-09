@@ -1,0 +1,44 @@
+docker run --rm --init --network none --read-only --user 1015:1017 --shm-size 4g --tmpfs /tmp:rw,exec,size=2g --env PYTHONDONTWRITEBYTECODE=1 --env PYTHONPATH=/workspace/src:/workspace/vendor/Pi3 --env OMP_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env LP_NUM_THREADS=1 --env XDG_CACHE_HOME=/tmp/cache --env MPLCONFIGDIR=/tmp/matplotlib --mount type=bind,source=/home/chenmao/GTSN,target=/workspace,readonly --mount type=bind,source=/home/chenmao/GTSN,target=/home/chenmao/GTSN,readonly --mount type=bind,source=/home/datasets_v2/chenmao,target=/home/datasets_v2/chenmao,readonly --mount type=bind,source=/home/datasets_v2/chenmao,target=/run/user/1016,readonly gtsn-experiment:20261009-clean python -m unittest discover -s /workspace/tests -v
+test_each_ablation_has_finite_training_gradients_and_control (test_cam_var.ContributionTests.test_each_ablation_has_finite_training_gradients_and_control) ... ok
+test_without_c1_uses_one_image_and_forgets_previous_observations (test_cam_var.ContributionTests.test_without_c1_uses_one_image_and_forgets_previous_observations) ... ok
+test_without_c2_does_not_score_or_filter_the_palm (test_cam_var.ContributionTests.test_without_c2_does_not_score_or_filter_the_palm) ... ok
+test_default_preparation_keeps_all_four_variants (test_cam_var_pipeline.RepeatPreparationTests.test_default_preparation_keeps_all_four_variants) ... {'benchmark': '/run/user/1016/tsn-1k-var', 'robot': 'panda', 'geometry_mode': 'camera_ray_depth', 'split_counts': [800, 100, 100], 'route_counts': {'direct': 200, 'over': 400, 'side': 400}, 'seed': 20261002, 'epochs': 30, 'draws_per_epoch': 8192, 'batch_size': 8, 'learning_rate': 0.0001, 'initialization': 'fresh navigation weights; only official Pi3 image encoder initialized', 'encoder_frozen': False, 'source_mixture': {'expert': 0.65, 'independent_perturbations': 0.35}, 'checkpoint_selection': 'minimum validation waypoint RMSE across all 30 epochs', 'test_used_for_selection': False, 'prediction_horizon': 30, 'execute_horizon': 15, 'goal_position_tolerance_m': 0.01, 'variants': {'full': 'C1/C2/C3', 'without_c1': 'current RGB only; no history or persistent surfaces', 'without_c2': 'TCP point only; no hand/wrist/camera scoring or body self filtering', 'without_c3': 'no uncertainty or trust training; no clearance refinement'}, 'runtime_image': 'gtsn-sim2real:20261008', 'gpu_ids': [0, 1, 2, 3], 'gpu_uuids': None, 'comparison_roots': [], 'reference_root': None, 'previous_seed': None, 'previous_seed_summary_sha256': None, 'shared_recovery': False, 'created_utc': '2026-10-09T03:27:52.124868+00:00'}
+ok
+test_gpu_assignment_rejects_reusing_one_device_for_two_variants (test_cam_var_pipeline.RepeatPreparationTests.test_gpu_assignment_rejects_reusing_one_device_for_two_variants) ... ok
+test_second_seed_changes_only_seed_and_reuses_exact_recovery_and_source (test_cam_var_pipeline.RepeatPreparationTests.test_second_seed_changes_only_seed_and_reuses_exact_recovery_and_source) ... {'benchmark': '/run/user/1016/tsn-1k-var', 'robot': 'panda', 'geometry_mode': 'camera_ray_depth', 'split_counts': [800, 100, 100], 'route_counts': {'direct': 200, 'over': 400, 'side': 400}, 'seed': 20261003, 'epochs': 30, 'draws_per_epoch': 8192, 'batch_size': 8, 'learning_rate': 0.0001, 'initialization': 'fresh navigation weights; only official Pi3 image encoder initialized', 'encoder_frozen': False, 'source_mixture': {'expert': 0.65, 'independent_perturbations': 0.35}, 'checkpoint_selection': 'minimum validation waypoint RMSE across all 30 epochs', 'test_used_for_selection': False, 'prediction_horizon': 30, 'execute_horizon': 15, 'goal_position_tolerance_m': 0.01, 'variants': {'full': 'C1/C2/C3', 'without_c1': 'current RGB only; no history or persistent surfaces'}, 'runtime_image': 'gtsn-sim2real:20261008', 'gpu_ids': [2, 3], 'gpu_uuids': ['GPU-full', 'GPU-without-c1'], 'comparison_roots': ['/tmp/tmp16g27sve/reference', '/tmp/tmp16g27sve/repeat'], 'reference_root': '/tmp/tmp16g27sve/reference', 'previous_seed': 20261002, 'previous_seed_summary_sha256': 'ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356', 'shared_recovery': True, 'created_utc': '2026-10-09T03:27:52.130977+00:00'}
+ok
+test_comparison_refuses_other_training_changes_and_duplicate_seeds (test_cam_var_seed_comparison.SeedComparisonTests.test_comparison_refuses_other_training_changes_and_duplicate_seeds) ... ok
+test_three_seed_statistics_preserve_pairs (test_cam_var_seed_comparison.SeedComparisonTests.test_three_seed_statistics_preserve_pairs) ... ok
+test_fr3_camera_housing_tracks_calibration_without_changing_other_regions (test_camera.CameraTests.test_fr3_camera_housing_tracks_calibration_without_changing_other_regions) ... ok
+test_half_pixel_resize_preserves_every_output_ray (test_camera.CameraTests.test_half_pixel_resize_preserves_every_output_ray) ... ok
+test_mixed_resolution_observations_stack_with_registered_calibration (test_camera.CameraTests.test_mixed_resolution_observations_stack_with_registered_calibration) ... ok
+test_panda_physical_camera_link_matches_optical_calibration (test_camera.CameraTests.test_panda_physical_camera_link_matches_optical_calibration) ... /opt/conda/lib/python3.11/unittest/case.py:579: UserWarning: Gimbal lock detected. Setting third angle to zero since it is not possible to uniquely determine all angles.
+  if method() is not None:
+ok
+test_ray_geometry_is_pose_covariant_and_matches_unclipped_teacher (test_camera.CameraTests.test_ray_geometry_is_pose_covariant_and_matches_unclipped_teacher) ... ok
+test_closed_loop_never_reads_expert_future_or_teacher_maps (test_closed_loop.RolloutTests.test_closed_loop_never_reads_expert_future_or_teacher_maps) ... ok
+test_distributed_draws_preserve_the_global_sample_stream (test_data.DataTests.test_distributed_draws_preserve_the_global_sample_stream) ... ok
+test_histories_are_causal_episode_local_and_reset_for_perturbations (test_data.DataTests.test_histories_are_causal_episode_local_and_reset_for_perturbations) ... ok
+test_legacy_archive_terminal_mask_is_repaired_without_changing_targets (test_data.DataTests.test_legacy_archive_terminal_mask_is_repaired_without_changing_targets) ... ok
+test_near_terminal_future_keeps_hold_targets (test_data.DataTests.test_near_terminal_future_keeps_hold_targets) ... ok
+test_source_and_route_mixtures_do_not_depend_on_group_sizes (test_data.DataTests.test_source_and_route_mixtures_do_not_depend_on_group_sizes) ... ok
+test_distributed_training_uses_localhost_in_offline_container (test_docker_run.LauncherTests.test_distributed_training_uses_localhost_in_offline_container) ... ok
+test_relative_output_is_forwarded_as_the_absolute_writable_mount (test_docker_run.LauncherTests.test_relative_output_is_forwarded_as_the_absolute_writable_mount) ... ok
+test_snapshot_controls_imports_and_test_directory (test_docker_run.LauncherTests.test_snapshot_controls_imports_and_test_directory) ... ok
+test_transferred_storage_is_read_only_at_both_paths (test_docker_run.LauncherTests.test_transferred_storage_is_read_only_at_both_paths) ... ok
+test_anchor_and_creation_uncertainty_remain_fixed_under_reobservation (test_geometry_modules.GeometryTests.test_anchor_and_creation_uncertainty_remain_fixed_under_reobservation) ... ok
+test_box_distance_is_metric_inside_and_outside (test_geometry_modules.GeometryTests.test_box_distance_is_metric_inside_and_outside) ... ok
+test_capacity_and_actual_observation_anchors (test_geometry_modules.GeometryTests.test_capacity_and_actual_observation_anchors) ... ok
+test_contact_response_is_pose_covariant_and_padding_monotone (test_geometry_modules.GeometryTests.test_contact_response_is_pose_covariant_and_padding_monotone) ... ok
+test_empty_and_nonfinite_scene_have_zero_risk (test_geometry_modules.GeometryTests.test_empty_and_nonfinite_scene_have_zero_risk) ... ok
+test_old_geometry_survives_the_four_observation_window (test_geometry_modules.GeometryTests.test_old_geometry_survives_the_four_observation_window) ... ok
+test_physical_regions_capture_width_wrist_and_measured_fingers (test_geometry_modules.GeometryTests.test_physical_regions_capture_width_wrist_and_measured_fingers) ... ok
+test_uncertainty_bounds_padding_and_terminal_fade (test_geometry_modules.GeometryTests.test_uncertainty_bounds_padding_and_terminal_fade) ... ok
+test_checkpoint_is_standalone_and_contains_no_episode_memory (test_main_model.MainModelTests.test_checkpoint_is_standalone_and_contains_no_episode_memory) ... ok
+test_complete_control_is_finite_and_episode_reset_is_exact (test_main_model.MainModelTests.test_complete_control_is_finite_and_episode_reset_is_exact) ... ok
+test_fresh_training_updates_every_learned_main_component (test_main_model.MainModelTests.test_fresh_training_updates_every_learned_main_component) ... ok
+
+----------------------------------------------------------------------
+Ran 34 tests in 4.064s
+
+OK
