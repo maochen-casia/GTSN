@@ -26,7 +26,8 @@ def write_json(path: Path, value: Any) -> None:
 def output_path(path: str | Path) -> Path:
     """Keep new runs in the project or the user's experiment storage."""
     resolved = Path(path).resolve()
-    roots = (PROJECT_ROOT / 'runs', Path('/home/chenmao/GTSN/runs'), EXPERIMENT_ROOT)
+    roots = (PROJECT_ROOT / 'runs', Path('/home/chenmao/GTSN/runs'), EXPERIMENT_ROOT,
+             Path('/home/datasets_v2/chenmao/experiments'))
     if not any(resolved.is_relative_to(root) and resolved != root for root in roots):
         raise ValueError('Output must be under project runs/ or /run/user/1016/experiments/')
     return resolved

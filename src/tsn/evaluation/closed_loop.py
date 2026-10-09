@@ -85,7 +85,7 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: Navigatio
             minimum_position_error = position_error
             reached_goal = is_goal(position_error, rotation_error)
             while steps < max_steps and not reached_goal:
-                rgb, _ = simulation.render()
+                rgb, depth = simulation.render()
                 anchor = state["qpos"][:7].copy()
                 if device.type == "cuda":
                     torch.cuda.synchronize(device)
@@ -96,8 +96,12 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: Navigatio
                     model.observe_step(steps)
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                                     enabled=device.type == 'cuda'):
-                    chunk = model(torch.as_tensor(rgb, device=device)[None], normalized, K,
-                        torch.as_tensor(state['T_B_C'], device=device, dtype=torch.float32)[None])
+                    if hasattr(model, 'predict_observation'):
+                        chunk = model.predict_observation(rgb, depth, state['qpos'], goal,
+                                                          calibration, state['T_B_C'])
+                    else:
+                        chunk = model(torch.as_tensor(rgb, device=device)[None], normalized, K,
+                            torch.as_tensor(state['T_B_C'], device=device, dtype=torch.float32)[None])
                 chunk = chunk[0].float().cpu().numpy()
                 max_history_slots = max(max_history_slots, len(getattr(model, 'history', ())))
                 inference_seconds.append(time.perf_counter() - infer_start)
@@ -144,6 +148,9 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: Navigatio
         "mean_inference_ms": 1000 * float(np.mean(inference_seconds)) if inference_seconds else None,
         "wall_seconds": time.perf_counter() - started,
         "privileged_action_map": False,
+        "observation_modality": getattr(model, 'observation_modality', 'rgb'),
+        "depth_input_at_inference": getattr(model, 'requires_depth', False),
+        "baseline_method": getattr(model, 'method', None),
         "expert_progress_method": None,
         "observation_schedule": getattr(model, 'schedule', 'fixed'),
         "scene_geometry": "tsn-1k complete room, object fittings, calibrated robot and collision envelopes",

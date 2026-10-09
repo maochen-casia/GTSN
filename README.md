@@ -1,5 +1,11 @@
 # GTSN: geometry-grounded table scene navigation
 
+The published-policy baseline suite is documented in
+[baselines_20261009.md](documents/baselines_20261009.md). It trains TSN adaptations
+of CARP (ICCV 2025), FlowPolicy (AAAI 2025), DP3 and Diffusion Policy in Docker,
+then evaluates complete validation/test partitions against the archived main
+model. Baseline artifacts are stored under `/home/datasets_v2/chenmao/experiments/`.
+
 For the transferred machine, use the clean image `gtsn-experiment:20261009-clean`
 (the launcher default). [Runtime setup](documents/docker_runtime.md) documents
 the reusable CUDA/PyTorch foundation, build commands, and training/evaluation.

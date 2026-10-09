@@ -25,7 +25,8 @@ def main():
     transferred = args.storage_root.resolve()
     snapshot = args.source_snapshot.resolve() if args.source_snapshot else root
     if args.source_snapshot and (not (snapshot/'src/tsn').is_dir() or
-            not any(snapshot.is_relative_to(base) for base in (root, Path('/run/user/1016/experiments')))):
+            not any(snapshot.is_relative_to(base) for base in (root, Path('/run/user/1016/experiments'),
+                                                               transferred/'experiments'))):
         parser.error('Source snapshot must contain src/tsn within the project or experiment storage')
     command = ['docker', 'run', '--rm', '--init', '--network', 'none', '--read-only',
                '--user', f'{os.getuid()}:{os.getgid()}', '--shm-size', '4g',
@@ -51,7 +52,7 @@ def main():
         parsed, _ = output_parser.parse_known_args(extra)
         if parsed.output_dir is not None:
             output = parsed.output_dir.resolve()
-            allowed = (root / 'runs', storage / 'experiments')
+            allowed = (root / 'runs', storage / 'experiments', transferred / 'experiments')
             if not any(output.is_relative_to(base) and output != base for base in allowed):
                 parser.error('Output must be a new directory under project runs/ or /run/user/1016/experiments/')
             index = next((i for i, value in enumerate(extra) if value == '--output-dir'), None)

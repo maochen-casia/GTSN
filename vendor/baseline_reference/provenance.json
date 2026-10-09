@@ -1,0 +1,82 @@
+{
+  "carp": {
+    "repository": "https://github.com/ZhefeiGong/carp",
+    "commit": "3ca00f7d1810b6cb0590d0cc8eec828d25843363",
+    "files": {
+      "LICENSE": {
+        "url": "https://raw.githubusercontent.com/ZhefeiGong/carp/3ca00f7d1810b6cb0590d0cc8eec828d25843363/LICENSE",
+        "sha256": "140fc691e4b6d3507a1741d45f88de99eb509c346c0289e6eba5afeb192d0fb8"
+      },
+      "singletask/MSAT/quant.py": {
+        "url": "https://raw.githubusercontent.com/ZhefeiGong/carp/3ca00f7d1810b6cb0590d0cc8eec828d25843363/singletask/MSAT/quant.py",
+        "sha256": "ee7ed97dd98302ef0444260c0a93512820cb850e600e465abd2c5ca8093cda19"
+      },
+      "singletask/MSAT/vqvae.py": {
+        "url": "https://raw.githubusercontent.com/ZhefeiGong/carp/3ca00f7d1810b6cb0590d0cc8eec828d25843363/singletask/MSAT/vqvae.py",
+        "sha256": "453b9e84af870461b7d430a645df32e1a3624dcf2ac11969c3eb61bde2256d64"
+      }
+    }
+  },
+  "flowpolicy": {
+    "repository": "https://github.com/zql-kk/FlowPolicy",
+    "commit": "86d10c14972b4eab083abec9026749c340f8e5ed",
+    "files": {
+      "LICENSE": {
+        "url": "https://raw.githubusercontent.com/zql-kk/FlowPolicy/86d10c14972b4eab083abec9026749c340f8e5ed/LICENSE",
+        "sha256": "7261539db03152b1245b49d0bcc2652118e01113909e0bf93a1e25665b71abf9"
+      },
+      "FlowPolicy/flow_policy_3d/policy/flowpolicy.py": {
+        "url": "https://raw.githubusercontent.com/zql-kk/FlowPolicy/86d10c14972b4eab083abec9026749c340f8e5ed/FlowPolicy/flow_policy_3d/policy/flowpolicy.py",
+        "sha256": "64b02d69bc97945a48d469e982b704eca18f171651d8b06f0f435fd8e26cc6cb"
+      },
+      "FlowPolicy/flow_policy_3d/consistencyfm/conditional_flow_matching.py": {
+        "url": "https://raw.githubusercontent.com/zql-kk/FlowPolicy/86d10c14972b4eab083abec9026749c340f8e5ed/FlowPolicy/flow_policy_3d/consistencyfm/conditional_flow_matching.py",
+        "sha256": "bdc67e8c8d44e45b7df9feb2634c625b200e4ebdc37512d1323d808127ccea18"
+      },
+      "FlowPolicy/flow_policy_3d/losses.py": {
+        "url": "https://raw.githubusercontent.com/zql-kk/FlowPolicy/86d10c14972b4eab083abec9026749c340f8e5ed/FlowPolicy/flow_policy_3d/losses.py",
+        "sha256": "97f505cc65682240c29d75934e48fe3dceb7af305a67426cbd8bda847914f95f"
+      },
+      "FlowPolicy/flow_policy_3d/model/vision/pointnet_extractor.py": {
+        "url": "https://raw.githubusercontent.com/zql-kk/FlowPolicy/86d10c14972b4eab083abec9026749c340f8e5ed/FlowPolicy/flow_policy_3d/model/vision/pointnet_extractor.py",
+        "sha256": "d327c522a62b3e8b7826da734d6f0b95769e408845dfdb199875d23f54543c80"
+      }
+    }
+  },
+  "dp3": {
+    "repository": "https://github.com/YanjieZe/3D-Diffusion-Policy",
+    "commit": "47385d9d6f5bde3f2ebdf2400ecb8261cc9e6b97",
+    "files": {
+      "LICENSE": {
+        "url": "https://raw.githubusercontent.com/YanjieZe/3D-Diffusion-Policy/47385d9d6f5bde3f2ebdf2400ecb8261cc9e6b97/LICENSE",
+        "sha256": "d62cd477abcbf7329c15d3e740c9466d07dc39ef3a212e4c9b237675c8bc7a7d"
+      },
+      "3D-Diffusion-Policy/diffusion_policy_3d/policy/dp3.py": {
+        "url": "https://raw.githubusercontent.com/YanjieZe/3D-Diffusion-Policy/47385d9d6f5bde3f2ebdf2400ecb8261cc9e6b97/3D-Diffusion-Policy/diffusion_policy_3d/policy/dp3.py",
+        "sha256": "ef6eb37146c92a839d632a91f01b501f4aa1ea32936f36575172592027c55e4d"
+      },
+      "3D-Diffusion-Policy/diffusion_policy_3d/model/vision/pointnet_extractor.py": {
+        "url": "https://raw.githubusercontent.com/YanjieZe/3D-Diffusion-Policy/47385d9d6f5bde3f2ebdf2400ecb8261cc9e6b97/3D-Diffusion-Policy/diffusion_policy_3d/model/vision/pointnet_extractor.py",
+        "sha256": "d1fbe151475a8b055af588533206249881f1387c3f12ee0f069d0d30838ea5d7"
+      }
+    }
+  },
+  "diffusion_policy": {
+    "repository": "https://github.com/real-stanford/diffusion_policy",
+    "commit": "5ba07ac6661db573af695b419a7947ecb704690f",
+    "files": {
+      "LICENSE": {
+        "url": "https://raw.githubusercontent.com/real-stanford/diffusion_policy/5ba07ac6661db573af695b419a7947ecb704690f/LICENSE",
+        "sha256": "304e99a48271e10820f71a1b86ef395c06c100d7f68dd1d308790d1064fc4d41"
+      },
+      "diffusion_policy/model/diffusion/conditional_unet1d.py": {
+        "url": "https://raw.githubusercontent.com/real-stanford/diffusion_policy/5ba07ac6661db573af695b419a7947ecb704690f/diffusion_policy/model/diffusion/conditional_unet1d.py",
+        "sha256": "8a95014f8aa52ade086f967c9018a66bf0c68f2133969c8f7a8522da01b472ac"
+      },
+      "diffusion_policy/policy/diffusion_unet_image_policy.py": {
+        "url": "https://raw.githubusercontent.com/real-stanford/diffusion_policy/5ba07ac6661db573af695b419a7947ecb704690f/diffusion_policy/policy/diffusion_unet_image_policy.py",
+        "sha256": "00d6767fcbc965a6e7a38ef4ae143116122e5b189ae381f082cdc6f817ca09c9"
+      }
+    }
+  }
+}

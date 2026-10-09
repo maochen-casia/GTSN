@@ -14,7 +14,11 @@ from tsn.common.config import read_json
 
 class NavigationDataset(Dataset):
     """Perturbations reset history; expert context never crosses an episode."""
-    def __init__(self, root, ids, catalog, stride, recovery_root=None, observation_hw=None, use_history=True):
+    def __init__(self, root, ids, catalog, stride, recovery_root=None, observation_hw=None, use_history=True,
+                 history_length=4, include_depth_history=False):
+        if not 1 <= history_length <= 4:
+            raise ValueError('History length must be between one and four')
+        self.include_depth_history = include_depth_history
         self.expert = FrameDataset(Path(root), ids, catalog, 30, frame_stride=stride, include_rgb=True,
                                    observation_hw=observation_hw)
         self.recovery = RecoveryDataset(Path(recovery_root), 30, include_rgb=True,
@@ -44,7 +48,7 @@ class NavigationDataset(Dataset):
         self.data = ConcatDataset([self.expert, self.recovery]) if self.recovery else self.expert
         self.route, self.source = np.asarray(route), np.asarray(source)
         self.history, self.ages, self.mask = build_history(np.asarray(episode), np.asarray(frame), self.source,
-                                                        length=4 if use_history else 1)
+                                                        length=history_length if use_history else 1)
 
     def __len__(self):
         return len(self.data)
@@ -54,7 +58,7 @@ class NavigationDataset(Dataset):
         context = [self.data[int(i)] if valid and i != index else current
                    for i, valid in zip(self.history[index], self.mask[index])]
         result = {key: value for key, value in current.items() if key != 'rgb'}
-        for key in ('rgb', 'qpos', 'goal_pose', 'K', 'T_B_C'):
+        for key in ('rgb', 'qpos', 'goal_pose', 'K', 'T_B_C') + (('depth',) if self.include_depth_history else ()):
             result['history_'+key] = torch.stack([row[key] for row in context])
         result['history_ages'] = torch.from_numpy(self.ages[index])
         result['history_mask'] = torch.from_numpy(self.mask[index])
