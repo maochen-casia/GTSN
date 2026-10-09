@@ -14,10 +14,12 @@ import torch
 from torch.utils.data import Dataset
 
 from tsn.data.splits import ROUTES
+from tsn.features.camera import resize_observation
 
 JOINT_NAMES = tuple(f"panda_joint{i}" for i in range(1, 8)) + (
     "panda_finger_joint1", "panda_finger_joint2",
 )
+FR3_JOINT_NAMES = tuple(name.replace('panda', 'fr3') for name in JOINT_NAMES)
 
 
 def validate_episode(handle: h5py.File, route: str) -> int:
@@ -34,7 +36,7 @@ def validate_episode(handle: h5py.File, route: str) -> int:
     if count < 2 or handle["depth_m"].ndim != 3 or len(handle["depth_m"]) != count:
         raise ValueError(f"{handle.filename}: invalid depth or trajectory length")
     names = tuple(value.decode() if isinstance(value, bytes) else str(value) for value in handle["joint_names"][:])
-    if names != JOINT_NAMES or handle.attrs["route_type"] != route:
+    if names not in (JOINT_NAMES, FR3_JOINT_NAMES) or handle.attrs["route_type"] != route:
         raise ValueError(f"{handle.filename}: joint ordering or route mismatch")
     for key in ("intrinsics", "T_ee_camera_cv", "goal_pose_xyz_wxyz"):
         if not np.isfinite(handle[key][:]).all():
@@ -70,12 +72,14 @@ class FrameDataset(Dataset):
     """
 
     def __init__(self, root: Path, ids: list[str], catalog: dict[str, str], chunk_size: int,
-                 frame_stride: int = 1, max_open_files: int = 8, include_rgb: bool = False) -> None:
+                 frame_stride: int = 1, max_open_files: int = 8, include_rgb: bool = False,
+                 observation_hw=None) -> None:
         if min(chunk_size, frame_stride, max_open_files) <= 0 or not ids:
             raise ValueError("A nonempty split and positive horizon/stride/cache are required")
         self.root, self.ids, self.catalog = root, list(ids), catalog
         self.chunk_size, self.stride, self.max_open = chunk_size, frame_stride, max_open_files
         self.include_rgb = include_rgb
+        self.observation_hw = observation_hw
         self.counts: list[int] = []
         self.offsets = [0]
         for episode in ids:
@@ -127,7 +131,7 @@ class FrameDataset(Dataset):
         }
         if self.include_rgb:
             sample['rgb'] = torch.from_numpy(np.asarray(handle['rgb'][frame], dtype=np.uint8))
-        return sample
+        return resize_observation(sample, self.observation_hw)
 
     def close(self) -> None:
         for handle in self._handles.values():

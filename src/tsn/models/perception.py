@@ -7,6 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from tsn.models.joint_head import JointProposalHead
+from tsn.features.camera import camera_rays, depth_to_base
 
 
 class PatchPositions:
@@ -24,8 +25,9 @@ class RGBPerception(nn.Module):
     """Pi3 image encoder + freshly initialized small decoder and navigation heads.
 
     Optional published weights initialize only the image encoder. No previous
-    navigation checkpoint is needed. Outputs use base-frame normalized XYZ and
-    predicted task scores; depth and expert futures are training targets only.
+    navigation checkpoint is needed. Camera-ray mode predicts camera Z-depth
+    and analytically transforms it to the downstream base-frame representation.
+    Depth and expert futures are training targets only.
     """
     def __init__(self, config, initialize_encoder=True):
         super().__init__()
@@ -36,6 +38,11 @@ class RGBPerception(nn.Module):
         from pi3.models.layers.block import BlockRope
         from pi3.models.layers.pos_embed import RoPE2D
         cfg = config['perception']
+        self.geometry_mode = cfg.get('geometry_mode', 'base_xyz')
+        if self.geometry_mode not in ('base_xyz', 'camera_ray_depth'):
+            raise ValueError('Unknown perception geometry mode')
+        self.near, self.far = config['maps']['near_m'], config['maps']['far_m']
+        self.point_center, self.point_scale = config['maps']['point_center_m'], config['maps']['point_scale_m']
         self.input_hw = tuple(cfg['input_hw'])
         if len(self.input_hw) != 2 or any(v <= 0 or v % 14 for v in self.input_hw):
             raise ValueError('RGB input dimensions must be positive multiples of 14')
@@ -59,7 +66,9 @@ class RGBPerception(nn.Module):
             attn_class=FlashAttentionRope, rope=self.rope) for _ in range(24)])
         self._decode = Pi3.decode
         self.condition = nn.Sequential(nn.Linear(41, 384), nn.SiLU(), nn.Linear(384, 768))
-        self.point_head = nn.Linear(768, 14*14*3)
+        self.point_head = nn.Linear(768, 14*14*(1 if self.geometry_mode == 'camera_ray_depth' else 3))
+        if self.geometry_mode == 'camera_ray_depth':
+            self.ray_embedding = nn.Sequential(nn.Linear(3, 384), nn.SiLU(), nn.Linear(384, 384))
         self.goal_head = nn.Linear(768, 14*14*2)
         self.action_map_head = nn.Linear(768, 14*14)
         nn.init.constant_(self.goal_head.bias, -3.)
@@ -77,17 +86,36 @@ class RGBPerception(nn.Module):
         if rgb.ndim != 4 or rgb.shape[-1] != 3 or rgb.dtype != torch.uint8:
             raise ValueError('Expected batched uint8 RGB images (B,H,W,3)')
         h, w = self.input_hw
-        image = F.interpolate(rgb.permute(0, 3, 1, 2).float()/255, (h, w), mode='bilinear', align_corners=False)
+        image = F.interpolate(rgb.permute(0, 3, 1, 2).float()/255, (h, w), mode='bilinear', align_corners=False,
+                              antialias=self.geometry_mode == 'camera_ray_depth')
         hidden = self.encoder((image-self.image_mean)/self.image_std, is_training=True)['x_norm_patchtokens']
-        hidden, _ = self._decode(self, self.encoder_projection(hidden), 1, h, w)
+        hidden = self.encoder_projection(hidden)
+        if self.geometry_mode == 'camera_ray_depth':
+            with torch.autocast(device_type=hidden.device.type, enabled=False):
+                rays = camera_rays(calibration.float(), rgb.shape[1:3], (h//14, w//14)).flatten(1, 2)
+            hidden = hidden+self.ray_embedding(rays)
+        hidden, _ = self._decode(self, hidden, 1, h, w)
         hidden = hidden[:, self.patch_start_idx:]
+        if self.geometry_mode == 'camera_ray_depth':
+            depth_logits = self.unpatchify(self.point_head(hidden), 1)
+            depth_logits = F.interpolate(depth_logits.float(), self.output_hw, mode='bilinear', align_corners=False)
+            z = self.near+(self.far-self.near)*depth_logits[:, 0].sigmoid()
+            with torch.autocast(device_type=hidden.device.type, enabled=False):
+                base = depth_to_base(z, calibration, rgb.shape[1:3], pose)
+                points = ((base-base.new_tensor(self.point_center))/base.new_tensor(self.point_scale)).permute(0, 3, 1, 2)
         K = calibration.float().clone()
+        if self.geometry_mode == 'camera_ray_depth':
+            K[:, 0, 2] += .5; K[:, 1, 2] += .5
         K[:, 0] /= rgb.shape[2]; K[:, 1] /= rgb.shape[1]
         hidden = hidden+self.condition(torch.cat((state, pose.flatten(1), K.flatten(1)), -1))[:, None]
-        points = 2*self.unpatchify(self.point_head(hidden), 3).tanh()
+        if self.geometry_mode == 'base_xyz':
+            points = 2*self.unpatchify(self.point_head(hidden), 3).tanh()
         goals = self.unpatchify(self.goal_head(hidden), 2).sigmoid()
         action_map = self.unpatchify(self.action_map_head(hidden), 1).sigmoid()
-        dense = F.interpolate(torch.cat((points, goals, action_map), 1), self.output_hw, mode='bilinear', align_corners=False)
+        scores = F.interpolate(torch.cat((goals, action_map), 1), self.output_hw, mode='bilinear', align_corners=False)
+        if self.geometry_mode == 'base_xyz':
+            points = F.interpolate(points, self.output_hw, mode='bilinear', align_corners=False)
+        dense = torch.cat((points, scores), 1)
         tokens = F.adaptive_avg_pool2d(hidden.transpose(1, 2).reshape(-1, 768, h//14, w//14), (4, 4)).flatten(2).transpose(1, 2)
         geometry = F.adaptive_avg_pool2d(dense, (4, 4)).flatten(2).transpose(1, 2)
         return self.joint_head(dense, state), tokens, geometry, dense

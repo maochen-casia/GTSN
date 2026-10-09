@@ -27,13 +27,15 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY configs ./configs
 COPY vendor/Pi3 ./vendor/Pi3
+COPY assets ./assets
 COPY scripts ./scripts
 COPY tests ./tests
 
 RUN if [ "$INSTALL_RUNTIME" = 1 ]; then \
     python -m pip install --upgrade "setuptools>=68" wheel \
     && python -m pip install . \
-    && python -m pip install --no-deps pyrender==0.1.45; fi
+    && python -m pip install --no-deps pyrender==0.1.45; \
+    else python -m pip install pycollada==0.9.2; fi
 
 # pyrender's stale PyOpenGL==3.1.0 metadata conflicts with modern OSMesa wrappers;
 # install it without dependencies after declaring all its actual dependencies above.

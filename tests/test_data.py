@@ -7,9 +7,22 @@ from tsn.data.hdf5_dataset import padded_future
 from tsn.data.recovery_dataset import RecoveryDataset
 from tsn.data.history import build_history
 from tsn.data.navigation import sampling_weights
+from tsn.training.runner import ShardedWeightedSampler
+import torch
 
 
 class DataTests(unittest.TestCase):
+    def test_distributed_draws_preserve_the_global_sample_stream(self):
+        weights = torch.tensor([.1, .2, .3, .4], dtype=torch.float64)
+        expected = list(ShardedWeightedSampler(weights, 32, torch.Generator().manual_seed(7)))
+        shards = [ShardedWeightedSampler(weights, 32, torch.Generator().manual_seed(7), rank, 4)
+                  for rank in range(4)]
+        self.assertTrue(all(len(shard) == 8 for shard in shards))
+        combined = [value for group in zip(*(list(shard) for shard in shards)) for value in group]
+        self.assertEqual(combined, expected)
+        with self.assertRaises(ValueError):
+            ShardedWeightedSampler(weights, 31, torch.Generator(), 0, 4)
+
     def test_histories_are_causal_episode_local_and_reset_for_perturbations(self):
         episode = np.array([0, 0, 0, 0, 0, 1, 1])
         frames = np.array([0, 15, 30, 45, 20, 0, 15])

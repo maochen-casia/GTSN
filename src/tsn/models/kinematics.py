@@ -1,22 +1,22 @@
 """Task-relative Cartesian route prediction with calibrated robot kinematics."""
-from pathlib import Path
 import xml.etree.ElementTree as ET
 
 import numpy as np
 import torch
 from torch import nn
+from tsn.simulation.robot import robot_spec
 
 
 class PandaKinematics(nn.Module):
-    """URDF-derived FK/Jacobian; no scene or simulator state is used."""
-    def __init__(self):
-        """Load the Panda base-to-TCP chain from ManiSkill's bundled URDF."""
+    """URDF-derived Panda/FR3 FK and Jacobian; no simulator state is used."""
+    def __init__(self, robot='panda'):
+        """Load the configured Franka base-to-TCP chain."""
         super().__init__()
-        from mani_skill import PACKAGE_ASSET_DIR
         from scipy.spatial.transform import Rotation
-        root = ET.parse(Path(PACKAGE_ASSET_DIR) / 'robots/panda/panda_v3.urdf').getroot()
+        spec = robot_spec(robot)
+        root = ET.parse(spec['urdf']).getroot()
         by_child = {j.find('child').get('link'): j for j in root.findall('joint')}
-        chain, link = [], 'panda_hand_tcp'
+        chain, link = [], spec['tcp']
         while link in by_child:
             joint = by_child[link]
             chain.append(joint)

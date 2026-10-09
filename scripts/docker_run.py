@@ -11,11 +11,14 @@ def main():
     parser.add_argument('--image', default='gtsn-persistent:20261005-compact-only')
     parser.add_argument('--gpu', default='0', help='GPU ID, comma-separated IDs, or all')
     parser.add_argument('--cpu', action='store_true')
+    parser.add_argument('--processes', type=int, default=1, help='Distributed training process count')
     parser.add_argument('--print-command', action='store_true')
     parser.add_argument('--source-snapshot', type=Path,
                         help='Run an existing source snapshot within the project or experiment storage')
-    parser.add_argument('command', choices=('train', 'evaluate', 'test'))
+    parser.add_argument('command', choices=('train', 'evaluate', 'generate_recovery', 'test'))
     args, extra = parser.parse_known_args()
+    if args.processes <= 0 or (args.processes != 1 and args.command != 'train'):
+        parser.error('Multiple processes are supported for training only')
     root = Path(__file__).resolve().parents[1]
     snapshot = args.source_snapshot.resolve() if args.source_snapshot else root
     if args.source_snapshot and (not (snapshot/'src/tsn').is_dir() or
@@ -58,7 +61,11 @@ def main():
             command += ['--gpus', 'all' if args.gpu == 'all' else f'"device={args.gpu}"']
         if args.cpu:
             extra += ['--device', 'cpu']
-        invocation = ['python', '-m', f'tsn.cli.{args.command}', *extra]
+        if args.processes > 1:
+            invocation = ['torchrun', '--master-addr=127.0.0.1', '--master-port=29500', f'--nproc-per-node={args.processes}',
+                          '-m', 'tsn.cli.train', *extra]
+        else:
+            invocation = ['python', '-m', f'tsn.cli.{args.command}', *extra]
     else:
         tests = '/workspace/tests' if snapshot == root else str(snapshot/'tests')
         invocation = ['python', '-m', 'unittest', 'discover', '-s', tests, '-v', *extra]

@@ -9,13 +9,22 @@ from tsn.data.hdf5_dataset import FrameDataset
 from tsn.data.history import build_history
 from tsn.data.recovery_dataset import RecoveryDataset
 from tsn.data.splits import ROUTES
+from tsn.common.config import read_json
 
 
 class NavigationDataset(Dataset):
     """Perturbations reset history; expert context never crosses an episode."""
-    def __init__(self, root, ids, catalog, stride, recovery_root=None):
-        self.expert = FrameDataset(Path(root), ids, catalog, 30, frame_stride=stride, include_rgb=True)
-        self.recovery = RecoveryDataset(Path(recovery_root), 30, include_rgb=True) if recovery_root else None
+    def __init__(self, root, ids, catalog, stride, recovery_root=None, observation_hw=None, use_history=True):
+        self.expert = FrameDataset(Path(root), ids, catalog, 30, frame_stride=stride, include_rgb=True,
+                                   observation_hw=observation_hw)
+        self.recovery = RecoveryDataset(Path(recovery_root), 30, include_rgb=True,
+                                        observation_hw=observation_hw) if recovery_root else None
+        manifest = Path(recovery_root)/'manifest.json' if recovery_root else None
+        if manifest and manifest.is_file():
+            provenance = read_json(manifest)
+            if (Path(provenance['source_dataset']).resolve() != Path(root).resolve() or
+                    provenance['source_partition'] != 'train'):
+                raise ValueError('Perturbation provenance does not match the training benchmark')
         episode, frame, route = [], [], []
         lookup = {name: i for i, name in enumerate(ids)}
         for name, count in zip(ids, self.expert.counts):
@@ -34,7 +43,8 @@ class NavigationDataset(Dataset):
             route.extend(self.recovery.route_indices); source.extend([1]*len(self.recovery))
         self.data = ConcatDataset([self.expert, self.recovery]) if self.recovery else self.expert
         self.route, self.source = np.asarray(route), np.asarray(source)
-        self.history, self.ages, self.mask = build_history(np.asarray(episode), np.asarray(frame), self.source)
+        self.history, self.ages, self.mask = build_history(np.asarray(episode), np.asarray(frame), self.source,
+                                                        length=4 if use_history else 1)
 
     def __len__(self):
         return len(self.data)

@@ -10,6 +10,21 @@ from unittest.mock import patch
 
 
 class LauncherTests(unittest.TestCase):
+    def test_distributed_training_uses_localhost_in_offline_container(self):
+        root = Path(__file__).resolve().parents[1]
+        script = root/'scripts/docker_run.py'
+        arguments = [str(script), '--print-command', '--gpu', '0,1,2,3', '--processes', '4', 'train',
+                     '--config', str(root/'configs/sim2real.json'), '--output-dir', 'runs/distributed-dry-run']
+        output = io.StringIO()
+        with patch.object(sys, 'argv', arguments), patch('os.getcwd', return_value=str(root)), \
+             contextlib.redirect_stdout(output):
+            runpy.run_path(str(script), run_name='__main__')
+        command = shlex.split(output.getvalue())
+        self.assertIn('torchrun', command)
+        self.assertIn('--master-addr=127.0.0.1', command)
+        self.assertIn('--nproc-per-node=4', command)
+        self.assertEqual(command[command.index('--network')+1], 'none')
+
     def test_snapshot_controls_imports_and_test_directory(self):
         root = Path(__file__).resolve().parents[1]
         script = root / 'scripts/docker_run.py'

@@ -8,6 +8,7 @@ from typing import Any
 import torch
 from torch import nn
 from torch.nn import functional as F
+from tsn.features.camera import camera_rays
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class MapSettings:
     point_center_m: tuple[float, ...] = (0.65, 0.0, 0.22)
     point_scale_m: tuple[float, ...] = (0.55, 0.55, 0.50)
     trajectory_block_size: int = 8
+    clip_points: bool = True
 
     def __post_init__(self) -> None:
         if min(self.height, self.width, self.trajectory_block_size) <= 0:
@@ -62,19 +64,15 @@ class GeometryMaps(nn.Module):
         cfg = self.settings
         batch, source_h, source_w = depth.shape
         # Match align_corners=False pixel centers in nearest-exact downsampling.
-        calibration = K.float().clone()
-        sx, sy = cfg.width / source_w, cfg.height / source_h
-        calibration[:, 0, :] *= sx
-        calibration[:, 1, :] *= sy
-        calibration[:, 0, 2] += (sx - 1) / 2
-        calibration[:, 1, 2] += (sy - 1) / 2
-        rays = torch.einsum("bij,hwj->bhwi", torch.linalg.inv(calibration), self.pixels)
+        rays = camera_rays(K, (source_h, source_w), (cfg.height, cfg.width))
         z = F.interpolate(depth[:, None].float(), size=(cfg.height, cfg.width), mode="nearest-exact")[:, 0]
         observed = torch.isfinite(z) & (z >= cfg.near_m) & (z <= cfg.far_m)
         z = torch.where(observed, z, torch.zeros_like(z))
         rotation, origin = T_B_C[:, :3, :3].float(), T_B_C[:, :3, 3].float()
         xyz_base = torch.einsum("bij,bhwj->bhwi", rotation, rays * z[..., None]) + origin[:, None, None]
-        points = ((xyz_base - self.center) / self.scale).clamp(-2, 2)
+        points = (xyz_base - self.center) / self.scale
+        if cfg.clip_points:
+            points = points.clamp(-2, 2)
         points = torch.where(observed[..., None], points, 0).permute(0, 3, 1, 2)
 
         def camera_positions(positions: torch.Tensor) -> torch.Tensor:
@@ -115,4 +113,3 @@ class GeometryMaps(nn.Module):
         if weights is not None:
             score = score * weights[None, :, None, None]
         return score.amax(1)
-

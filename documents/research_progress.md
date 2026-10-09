@@ -46,3 +46,24 @@ results remain exploratory.
 [C2 method and results](c2_embodied_geometry.md) ·
 [C3 method and results](c3_uncertainty_clearance.md) ·
 [Final C2 figures and receipts](../runs/c2_part_geometry_20261007/final).
+
+## Fresh cleaned-model experiment — 2026-10-08
+
+Training and full testing of the rewritten C1/C2/C3 model are complete. With
+the Pi3 image encoder fully trainable, it reaches **83% validation / 87% test**;
+with the encoder frozen, it reaches **73% / 69%**. Each split has 100 episodes
+with 20/40/40 route counts. Both runs train all 30 epochs from random navigation
+weights, loading only official Pi3 encoder weights. Validation waypoint RMSE
+selects epochs 30 and 18 respectively; test results do not guide checkpoint
+selection. Tuning gains +10/+18 observed points and clears the 70% target on
+both splits. All 400 rollouts and source/checkpoint/trajectory audits completed.
+The frozen encoder matches all 343 official tensors; all 343 were updated in
+the tuned run. These fresh full-model results are separate from the historical
+staged contribution ablations above.
+
+The overnight host supervisor stopped before launching evaluation. The
+checkpoints remained intact; detached Docker evaluation and audit containers
+completed the handoff on October 8.
+
+[Fresh training report](main_fresh_training.md) ·
+[Tuned results and artifacts](../runs/main_full_finetune_20261007/RESULTS.md).

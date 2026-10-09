@@ -63,10 +63,60 @@ python3 scripts/docker_run.py --gpu 0 evaluate \
 Optional repeated `--episode` arguments select members of the requested
 partition for a short run; the result records whether the partition is complete.
 Evaluation saves overall/per-route metrics, episode trajectories and optional
-videos. Policy diagnostics and separate analysis/ablation entry points have
-been removed.
+videos. Contribution switches in the model configuration control the matched
+C1/C2/C3 ablations during both training and live evaluation.
 
 ## Source layout and verification
+
+The updated benchmark experiment uses [configs/cam_var.json](configs/cam_var.json):
+`/run/user/1016/tsn-1k-var`, Franka Panda geometry, 800/100/100 episodes, and a fully
+trainable Pi3 encoder. RGB perception predicts camera Z-depth along calibrated
+OpenCV rays, then applies measured `T_B_C` analytically. Ray embeddings condition
+the decoder before attention. The route and clearance modules retain their
+base-frame interface. The Panda camera housing moves with the measured mounting
+transform in both perception filtering and simulation.
+
+Mixed-resolution training observations are resized to 192×256 with matching
+half-pixel intrinsics; RGB uses antialiased bilinear filtering and depth uses
+nearest-exact sampling. Live inference accepts the episode's native image/K.
+The legacy `main.json` geometry mode remains available for prior checkpoints.
+
+Reuse the project Docker runtime, generate independent training perturbations,
+then train with global batch size eight on four GPUs:
+
+```bash
+docker build --build-arg BASE_IMAGE=gtsn-persistent:20261005-compact-only \
+  --build-arg INSTALL_RUNTIME=0 -t gtsn-sim2real:20261008 .
+
+python3 scripts/docker_run.py --image gtsn-sim2real:20261008 --cpu generate_recovery \
+  --config /home/chenmao/GTSN/configs/cam_var.json \
+  --output-dir /run/user/1016/experiments/gtsn_cam_var_20261008/recovery
+
+python3 scripts/docker_run.py --image gtsn-sim2real:20261008 \
+  --gpu 0,1,2,3 --processes 4 train \
+  --config /home/chenmao/GTSN/configs/cam_var.json \
+  --output-dir /run/user/1016/experiments/gtsn_cam_var_20261008/full/training
+```
+
+For another run, change the recovery path in its configuration and use fresh
+output directories. Recovery uses four noisy joint states per training episode,
+with 2 mm conservative scene clearance and no policy rollouts. Future labels
+follow the next expert states, including terminal holds; they are not replanned
+recovery paths. Evaluation uses the same `evaluate` commands above with the new
+image and checkpoint. [check_sim2real.py](scripts/check_sim2real.py) audits robot
+FK and calibrated depth reconstruction. [run_cam_var_pipeline.py](scripts/run_cam_var_pipeline.py)
+freezes source and benchmark hashes, generates the shared recovery pool, and runs
+the full model plus three ablations concurrently in Docker. Set one of
+`model.contributions.c1/c2/c3` to false to remove history and persistence, replace
+the embodiment with a TCP point, or bypass clearance refinement respectively.
+[report_cam_var.py](scripts/report_cam_var.py) audits all four selected checkpoints
+and the 800 complete validation/test rollouts, then writes paired results and figures.
+The experiment archive is [runs/cam_var_20261008](runs/cam_var_20261008).
+
+The earlier FR3 configuration remains in `configs/sim2real.json`; its stopped
+run and recovery data are not used for the updated Panda experiment. FR3 assets
+are vendored from the benchmark generator with their upstream
+[license](assets/fr3/LICENSE) and [provenance](assets/fr3/PROVENANCE.json).
 
 ```text
 configs/main.json

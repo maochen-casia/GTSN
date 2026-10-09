@@ -1,0 +1,153 @@
+{
+  "benchmark": {
+    "root": "/run/user/1016/tsn-1k-var",
+    "seed": 20261001,
+    "route_counts": {
+      "direct": 200,
+      "over": 400,
+      "side": 400
+    },
+    "partitions": {
+      "train": {
+        "direct": 160,
+        "over": 320,
+        "side": 320
+      },
+      "validation": {
+        "direct": 20,
+        "over": 40,
+        "side": 40
+      },
+      "test": {
+        "direct": 20,
+        "over": 40,
+        "side": 40
+      }
+    }
+  },
+  "model": {
+    "perception": {
+      "input_hw": [
+        84,
+        112
+      ],
+      "pretrained_weights": "/run/user/1016/pi3/model.safetensors",
+      "freeze_encoder": false,
+      "geometry_mode": "camera_ray_depth"
+    },
+    "maps": {
+      "height": 80,
+      "width": 80,
+      "goal_sigma_m": 0.04,
+      "action_sigma_m": 0.02,
+      "action_decay_steps": 20.0,
+      "cutoff_sigma": 3.0,
+      "occlusion_tolerance_m": 0.015,
+      "near_m": 0.02,
+      "far_m": 2.0,
+      "point_center_m": [
+        0.65,
+        0,
+        0.22
+      ],
+      "point_scale_m": [
+        0.55,
+        0.55,
+        0.5
+      ],
+      "trajectory_block_size": 8,
+      "clip_points": false
+    },
+    "joint_head": {
+      "state_dim": 16,
+      "action_dim": 7,
+      "chunk_size": 30,
+      "action_scale_rad": 0.75,
+      "encoder_channels": [
+        32,
+        64,
+        128,
+        192
+      ],
+      "spatial_pool_size": 4,
+      "map_feature_dim": 384,
+      "state_feature_dim": 128,
+      "hidden_dim": 256,
+      "dropout": 0.1
+    },
+    "memory": {
+      "capacity": 1600,
+      "merge_radius": 0.025,
+      "voxel_size": 0.02
+    },
+    "clearance": {
+      "max_padding": 0.03,
+      "margin": 0.04
+    },
+    "robot": "panda",
+    "contributions": {"c1": true, "c2": true, "c3": true}
+  },
+  "train": {
+    "seed": 20261002,
+    "device": "cuda",
+    "epochs": 30,
+    "batch_size": 8,
+    "num_workers": 4,
+    "frame_stride": 15,
+    "validation_frame_stride": 15,
+    "draws_per_epoch": 8192,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.0001,
+    "gradient_clip_norm": 1.0,
+    "recovery_root": "/run/user/1016/experiments/gtsn_cam_var_20261008/recovery",
+    "loss_weights": {
+      "route": 1.0,
+      "joints": 0.5,
+      "maps": 0.25,
+      "geometry": 0.001,
+      "uncertainty": 0.1,
+      "trust": 0.01
+    },
+    "observation_hw": [
+      192,
+      256
+    ]
+  },
+  "eval": {
+    "execute_horizon": 15,
+    "max_control_steps": 400,
+    "physics_hz": 100,
+    "control_hz": 20,
+    "goal_position_tolerance_m": 0.01,
+    "goal_orientation_tolerance_rad": 0.15,
+    "stop_on_collision": true,
+    "contact_impulse_threshold_ns": 1e-07,
+    "render_videos": false,
+    "video_stride": 2,
+    "arm_stiffness": 1000.0,
+    "arm_damping": 100.0,
+    "arm_force_limit": 100.0,
+    "finger_stiffness": 1000.0,
+    "finger_damping": 100.0,
+    "finger_force_limit": 100.0,
+    "ee_link": "panda_hand_tcp",
+    "table_center_m": [
+      0.35,
+      0,
+      -0.04
+    ],
+    "table_half_size_m": [
+      0.63,
+      0.62,
+      0.04
+    ],
+    "base_position_m": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "kinematic_position_tolerance_m": 0.002,
+    "kinematic_rotation_tolerance_rad": 0.01,
+    "goal_success_criterion": "xyz"
+  }
+}

@@ -12,15 +12,17 @@ import torch
 from torch.utils.data import Dataset
 
 from tsn.data.splits import ROUTES
+from tsn.features.camera import resize_observation
 
 
 class RecoveryDataset(Dataset):
     """Recovery samples parallel FrameDataset's batch schema."""
 
-    def __init__(self, root: Path, chunk_size: int, include_rgb: bool = False) -> None:
+    def __init__(self, root: Path, chunk_size: int, include_rgb: bool = False, observation_hw=None) -> None:
         self.root = root
         self.chunk_size = int(chunk_size)
         self.include_rgb = include_rgb
+        self.observation_hw = observation_hw
         self.paths = sorted(root.glob("episode_*.npz"))
         if not self.paths:
             raise FileNotFoundError(f"No recovery archives found in {root}")
@@ -104,7 +106,7 @@ class RecoveryDataset(Dataset):
         }
         if self.include_rgb:
             sample['rgb'] = torch.from_numpy(data['rgb'][sample_index].copy())
-        return sample
+        return resize_observation(sample, self.observation_hw)
 
     def close(self) -> None:
         for value in self._files.values():

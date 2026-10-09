@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from tsn.common.checkpoint import load_checkpoint
 from tsn.features.maps import GeometryMaps
 from tsn.models.c1_memory import PersistentGeometry, workspace_mask
-from tsn.models.c2_embodiment import EmbodimentGeometry
+from tsn.models.c2_embodiment import EmbodimentGeometry, TCPGeometry
 from tsn.models.c3_clearance import UncertaintyClearance
 from tsn.models.kinematics import PandaKinematics
 from tsn.models.perception import RGBPerception
@@ -34,9 +34,16 @@ class NavigationPolicy(nn.Module):
             raise ValueError('The main model requires the shared XYZ normalization and 30-step horizon')
         self.perception = perception if perception is not None else RGBPerception(config, initialize_encoder)
         self.route = RouteHead()
-        self.kinematics = PandaKinematics()
-        self.embodiment = EmbodimentGeometry()
+        self.robot = config.get('robot', 'panda')
+        contributions = config.get('contributions', {})
+        self.use_history = contributions.get('c1', True)
+        self.use_embodiment = contributions.get('c2', True)
+        self.use_clearance = contributions.get('c3', True)
+        self.kinematics = PandaKinematics(self.robot)
+        self.embodiment = EmbodimentGeometry(self.robot) if self.use_embodiment else TCPGeometry()
         self.clearance = UncertaintyClearance(**config['clearance'])
+        if not self.use_clearance:
+            self.clearance.requires_grad_(False)
         self.memory = PersistentGeometry(**config['memory'])
         self.freeze_encoder = config['perception']['freeze_encoder']
         if self.freeze_encoder:
@@ -51,7 +58,7 @@ class NavigationPolicy(nn.Module):
 
     def reset_episode(self):
         self.memory.reset()
-        self.history = deque(maxlen=4)
+        self.history = deque(maxlen=4 if self.use_history else 1)
         self.step = 0
 
     def observe_step(self, step):
@@ -68,10 +75,14 @@ class NavigationPolicy(nn.Module):
         q = state[:, :7].float()*math.pi
         with torch.autocast(device_type=q.device.type, enabled=False):
             tcp, goal = self.kinematics(q), goal_position(state)
+            mount = torch.linalg.inv(tcp[0])@pose[0].float()
             points = metric_points(dense)
             fingers = state[0, 7:9].float()*.04
-            radius = self.clearance.predict_error(self.route.visual(tokens.float()), points, pose.float(), tcp)
-            valid = workspace_mask(points[0]) & ~self.embodiment.self_mask(points[0], tcp[0], fingers)
+            radius = (self.clearance.predict_error(self.route.visual(tokens.float()), points, pose.float(), tcp)
+                      if self.use_clearance else points.new_zeros(points.shape[:2]))
+            valid = workspace_mask(points[0]) & ~self.embodiment.self_mask(points[0], tcp[0], fingers, mount)
+            if not self.use_history:
+                self.memory.reset()
             self.memory.update(points[0], valid, radius[0], self.step, tcp[0, :3, 3], goal[0])
             self.history.append((tokens.detach(), geometry.detach(), pose.detach(), self.step))
             observed = [torch.stack([frame[i] for frame in self.history], 1) for i in range(3)]
@@ -79,8 +90,9 @@ class NavigationPolicy(nn.Module):
             offsets, _ = self.route(*observed, ages, torch.ones_like(ages, dtype=torch.bool), state, tcp)
             positions, rotations, seeds = cartesian_proposal(offsets, joint, q, tcp, goal, self.kinematics)
             surfaces, errors = self.memory.query()
-            refined = self.clearance.refine(positions[0], rotations[0], tcp[0], goal[0],
-                                            surfaces, errors, fingers, self.embodiment)
+            refined = (self.clearance.refine(positions[0], rotations[0], tcp[0], goal[0],
+                                            surfaces, errors, fingers, self.embodiment, mount)
+                       if self.use_clearance else positions[0])
             targets = self.kinematics.inverse(seeds[0], refined, rotations[0])
         return (targets-q[0])[None]
 

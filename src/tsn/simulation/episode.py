@@ -15,8 +15,9 @@ from typing import Any
 
 import numpy as np
 
-from tsn.data.hdf5_dataset import JOINT_NAMES
+from tsn.data.hdf5_dataset import JOINT_NAMES, FR3_JOINT_NAMES
 from tsn.simulation.benchmark_scene import BENCHMARK_SETTINGS, add_visuals, collision_half
+from tsn.simulation.robot import robot_spec, robot_tree
 
 
 def quaternion_matrix(quaternion: np.ndarray) -> np.ndarray:
@@ -56,10 +57,13 @@ class EpisodeSimulation:
         import sapien.physx as physx
         import pyrender
         import trimesh
-        from mani_skill import PACKAGE_ASSET_DIR
 
         self.sapien, self.pyrender, self.trimesh = sapien, pyrender, trimesh
         options = {**options, **BENCHMARK_SETTINGS}
+        kind = 'fr3' if joint_names == FR3_JOINT_NAMES else 'panda'
+        spec = robot_spec(kind)
+        options['ee_link'] = spec['tcp']
+        self.robot_kind, self.base_link = kind, spec['base']
         self.options = options
         if not np.isfinite(initial_qpos).all() or not np.isfinite(initial_ee).all():
             raise ValueError("Initial robot state must be finite")
@@ -79,26 +83,36 @@ class EpisodeSimulation:
         self._objects(scene_description)
         loader = self.scene.create_urdf_loader()
         loader.fix_root_link = True
-        urdf = Path(PACKAGE_ASSET_DIR) / "robots/panda" / options["robot_urdf"]
+        urdf = spec['urdf']
         if not urdf.is_file():
             raise FileNotFoundError(f"Panda asset missing from Docker image: {urdf}")
         # SAPIEN's URDF parser creates Vulkan materials for inline color tags.
         # OSMesa owns visuals here; remove only materials, retaining all v3
         # geometry, collisions, masses and joints in a disposable container file.
-        tree = ET.parse(urdf)
+        tree = ET.ElementTree(robot_tree(kind, camera_extrinsic))
+        visual_elements = [(link.get('name'), visual) for link in tree.getroot().findall('link')
+                           for visual in link.findall('visual')]
+        for link in tree.getroot().findall('link'):
+            for visual in link.findall('visual'):
+                link.remove(visual)
         for parent in tree.iter():
             for child in list(parent):
                 if child.tag == "material":
                     parent.remove(child)
-        for mesh in tree.iter("mesh"):
-            mesh.set("filename", str((urdf.parent / mesh.get("filename")).resolve()))
+        semantic = ET.parse(urdf.with_suffix('.srdf')).getroot()
+        if kind == 'fr3':
+            for link in ('fr3_hand', 'fr3_hand_tcp', 'fr3_link8', 'fr3_link7'):
+                ET.SubElement(semantic, 'disable_collisions', link1='camera_link', link2=link, reason='Adjacent')
+        self.disabled_pairs = {frozenset((tag.get('link1'), tag.get('link2')))
+                               for tag in semantic.findall('disable_collisions')}
         with tempfile.TemporaryDirectory(prefix="tsn-urdf-") as temporary:
             physics_urdf = Path(temporary) / "panda.urdf"
             tree.write(physics_urdf)
-            builder = loader.load_file_as_articulation_builder(str(physics_urdf), str(urdf.with_suffix(".srdf")))
+            physics_srdf = physics_urdf.with_suffix('.srdf')
+            ET.ElementTree(semantic).write(physics_srdf)
+            builder = loader.load_file_as_articulation_builder(str(physics_urdf), str(physics_srdf))
         if builder is None:
             raise RuntimeError(f"Unable to load Panda asset {urdf}")
-        visual_records = [(link.name, list(link.visual_records)) for link in builder.link_builders]
         for link in builder.link_builders:
             link.visual_records = []
         self.robot = builder.build(fix_root_link=True)
@@ -108,20 +122,22 @@ class EpisodeSimulation:
             link.disable_gravity = True
         self.joints = self.robot.get_active_joints()
         actual_names = tuple(joint.name for joint in self.joints)
-        if actual_names != joint_names or actual_names != JOINT_NAMES:
-            raise ValueError("Panda URDF and HDF5 joint order differ")
-        self.T_W_B = self.links["panda_link0"].entity_pose.to_transformation_matrix()
+        if actual_names != joint_names or actual_names != spec['joints']:
+            raise ValueError("Robot URDF and HDF5 joint order differ")
+        self.T_W_B = self.links[spec['base']].entity_pose.to_transformation_matrix()
         self.T_B_W = np.linalg.inv(self.T_W_B)
         self.adjacent = {frozenset((link.name, link.parent.name)) for link in self.links.values()
                          if link.parent is not None}
         self.fingers = np.asarray(initial_qpos[7:], dtype=np.float32).copy()
         self.robot.set_qpos(initial_qpos.astype(np.float32))
         self.robot.set_qvel(np.zeros(9, dtype=np.float32))
+        effort = {joint.get('name'): float(joint.find('limit').get('effort'))
+                  for joint in tree.getroot().findall('joint') if joint.find('limit') is not None}
         for index, joint in enumerate(self.joints):
             prefix = "arm" if index < 7 else "finger"
             joint.set_drive_properties(float(options[f"{prefix}_stiffness"]),
                                        float(options[f"{prefix}_damping"]),
-                                       float(options[f"{prefix}_force_limit"]), "force")
+                                       effort[joint.name] if kind == 'fr3' else float(options[f"{prefix}_force_limit"]), "force")
             joint.set_drive_target(float(initial_qpos[index]))
             joint.set_drive_velocity_target(0.0)
         self.robot.set_solver_position_iterations(options["solver_position_iterations"])
@@ -135,16 +151,23 @@ class EpisodeSimulation:
             raise ValueError(f"Panda TCP does not match benchmark: position={position_error:.6f} m, "
                              f"orientation={rotation_error:.6f} rad; check ee_link and URDF")
         self.robot_nodes = []
-        for link_name, records in visual_records:
-            for record in records:
-                if record.type != "file":
-                    continue
-                mesh_scene = trimesh.load(record.filename, force="scene", process=False)
-                for geometry in mesh_scene.dump(concatenate=False):
-                    geometry.apply_scale(np.asarray(record.scale))
-                    mesh = pyrender.Mesh.from_trimesh(geometry, smooth=False)
-                    node = self.render_scene.add(mesh)
-                    self.robot_nodes.append((link_name, record.pose.to_transformation_matrix(), node))
+        from tsn.models.c2_embodiment import origin_transform
+        for link_name, visual in visual_elements:
+            mesh_tag, box = visual.find('geometry/mesh'), visual.find('geometry/box')
+            if mesh_tag is not None:
+                mesh_scene = trimesh.load(mesh_tag.get('filename'), force='scene', process=False)
+                geometries = mesh_scene.dump(concatenate=False)
+                for geometry in geometries:
+                    geometry.apply_scale(np.fromstring(mesh_tag.get('scale', '1 1 1'), sep=' '))
+                material = None
+            elif box is not None:
+                geometries = [trimesh.creation.box(extents=np.fromstring(box.get('size'), sep=' '))]
+                material = pyrender.MetallicRoughnessMaterial(baseColorFactor=[.12, .14, .16, 1])
+            else:
+                continue
+            for geometry in geometries:
+                node = self.render_scene.add(pyrender.Mesh.from_trimesh(geometry, material=material, smooth=False))
+                self.robot_nodes.append((link_name, origin_transform(visual.find('origin')), node))
         height, width = source_hw
         camera = pyrender.IntrinsicsCamera(
             fx=float(calibration[0, 0]), fy=float(calibration[1, 1]),
@@ -204,7 +227,8 @@ class EpisodeSimulation:
             robot_a, robot_b = a in self.links, b in self.links
             if not robot_a and not robot_b:
                 continue
-            if pair == frozenset(("panda_link0", "table")) or (robot_a and robot_b and pair in self.adjacent):
+            if pair == frozenset((self.base_link, "table")) or (robot_a and robot_b and
+                    (pair in self.adjacent or (self.robot_kind == 'fr3' and pair in self.disabled_pairs))):
                 continue
             impulse = sum(float(np.linalg.norm(point.impulse)) for point in contact.points)
             if impulse > self.options["contact_impulse_threshold_ns"]:

@@ -52,7 +52,7 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: Navigatio
     K = torch.as_tensor(calibration, device=device, dtype=torch.float32)[None]
     goal_tensor = torch.as_tensor(goal, device=device)[None]
     first_collision = None
-    steps = replans = clips = 0
+    steps = replans = clips = max_history_slots = 0
     reached_goal = False
     inference_seconds = []
     q_history, ee_history, camera_history = [], [], []
@@ -99,6 +99,7 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: Navigatio
                     chunk = model(torch.as_tensor(rgb, device=device)[None], normalized, K,
                         torch.as_tensor(state['T_B_C'], device=device, dtype=torch.float32)[None])
                 chunk = chunk[0].float().cpu().numpy()
+                max_history_slots = max(max_history_slots, len(getattr(model, 'history', ())))
                 inference_seconds.append(time.perf_counter() - infer_start)
                 replans += 1
                 chosen_execute = model.execution_horizon(execute) if hasattr(model, 'execution_horizon') else execute
@@ -145,7 +146,11 @@ def rollout(episode: str, route: str, root: Path, output: Path, model: Navigatio
         "privileged_action_map": False,
         "expert_progress_method": None,
         "observation_schedule": getattr(model, 'schedule', 'fixed'),
-        "scene_geometry": "tsn-1k complete room, object fittings, Panda v3 and collision envelopes",
+        "scene_geometry": "tsn-1k complete room, object fittings, calibrated robot and collision envelopes",
+        "robot": getattr(model, 'robot', 'panda'),
+        "contributions": {name: getattr(model, attribute, True) for name, attribute in
+                          (('c1', 'use_history'), ('c2', 'use_embodiment'), ('c3', 'use_clearance'))},
+        "max_history_slots": max_history_slots,
     }
     np.savez_compressed(directory / "trajectory.npz", qpos=np.asarray(q_history),
                         T_B_E=np.asarray(ee_history), T_B_C=np.asarray(camera_history),
