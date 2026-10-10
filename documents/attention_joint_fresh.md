@@ -128,3 +128,7 @@ additional seed matches the earlier joint model's 70/100 test successes, but
 both fall below its 68/100 validation successes. Neither satisfies the no
 observed performance drop criterion across both splits. Test results have not
 been used to nominate a seed.
+
+The next experiment expands scene/robot node counts and replaces joint-origin
+tokens with adaptive surface selection; see
+[adaptive_surface_nodes.md](adaptive_surface_nodes.md).

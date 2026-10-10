@@ -13,6 +13,7 @@ def main():
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--gpus', default='0,1,2,3,4,5,6,7')
     parser.add_argument('--image', default='gtsn-experiment:20261009-clean')
+    parser.add_argument('--config', type=Path, help='Fresh joint configuration, optionally with adaptive surface nodes')
     parser.add_argument('--seed', type=int,
                         help='Override only the training seed; preserve the benchmark split seed')
     args = parser.parse_args()
@@ -25,7 +26,7 @@ def main():
         parser.error('Seed must lie in [0, 2**32)')
     if root.exists() or not root.is_relative_to(storage/'experiments') or root == storage/'experiments':
         parser.error('Use a new directory inside the experiment storage')
-    config = json.loads((project/'configs/attention_joint_fresh.json').read_text())
+    config = json.loads((args.config or project/'configs/attention_joint_fresh.json').read_text())
     if args.seed is not None:
         config['train']['seed'] = args.seed
     if config['train']['batch_size'] % len(ids):

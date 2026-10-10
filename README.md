@@ -1,5 +1,11 @@
 # GTSN: geometry-grounded table scene navigation
 
+The larger surface-node architecture is documented in
+[adaptive_surface_nodes.md](documents/adaptive_surface_nodes.md). It queries up
+to 1,024 scene points and learns to select 64 nodes from full arm/hand collision
+surfaces at each candidate pose. Two fresh, fully trainable seed trials are
+running with four GPUs each; closed-loop results are pending. All 73 tests pass.
+
 The fresh full joint run is documented in
 [attention_joint_fresh.md](documents/attention_joint_fresh.md). It trains the
 Pi3 encoder and every existing/new head together, initializing only the encoder
@@ -197,3 +203,36 @@ path. Historical success rates belong to the archived implementation; the
 rewritten main model needs its own training and full validation/test evaluation.
 Use an archive's frozen `source/` for historical checkpoint replay, rather than
 loading an adapter into this main model.
+
+## Real-data pilot
+
+The three-episode milestone in `instructions/combination.md` is prepared at
+[the review gallery](runs/frankanav_pilot_20261010/processed/index.html), with
+[the complete audit](runs/frankanav_pilot_20261010/processed/report.json).
+Episodes `ep_00000`–`ep_00002` contain 441 recorded frames, exported as 315
+frames at 20 Hz with undistorted 192×256 front RGB-D, calibrated camera poses,
+videos, storyboards, base-frame point clouds, and source hashes. The new cloud
+downloads contain only `data.pkl`, `front/`, and `front_depth/`.
+
+[download_frankanav.py](scripts/download_frankanav.py) performs incremental,
+checksum-verified front-only downloads. [prepare_frankanav.py](scripts/prepare_frankanav.py)
+processes selected episodes in the existing Docker runtime; its default selection
+is the first three. [frankanav_calibration.json](configs/frankanav_calibration.json)
+pins the calibration and Panda arm joint definitions from the two supplied
+repositories. The source recorder stores aligned depth in metres, but its RGB
+and depth messages can have different timestamps. The converter matches them
+on their own clocks and masks 85 exported depth frames that exceed a 20 ms
+matching tolerance. Unreferenced trailing camera files are audited and excluded.
+
+The gripper is always open by user instruction. Real HDF5 files explicitly use
+seven Panda arm joints plus the Robotiq `finger_joint`; they retain the measured
+native states and timestamps. Camera calibration is relative to `panda_link7`,
+while the exported navigation pose uses the `panda_link8` flange. Goals are
+tagged as hindsight demonstration endpoints. These files use a separate real
+schema and are marked `training_ready=false`: combined training still needs a
+real-data loader and appropriate gripper embodiment handling after pilot review.
+Closed-loop validation and test will use `tsn-1k-var` only.
+
+The five focused real-data tests pass in Docker, covering causal RGB selection,
+RGB-D matching and masking, measured-state interpolation, pinhole calibration,
+flange/camera transforms, the terminal state, and unreferenced camera files.

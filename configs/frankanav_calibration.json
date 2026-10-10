@@ -1,0 +1,197 @@
+{
+  "image_hw": [
+    480,
+    640
+  ],
+  "K": [
+    396.0710341603342,
+    0.0,
+    315.7040109131985,
+    0.0,
+    396.09717702721105,
+    238.44315183846572,
+    0.0,
+    0.0,
+    1.0
+  ],
+  "distortion": [
+    -0.05431546428894861,
+    0.06166535760480882,
+    0.001083637411317939,
+    0.0009118986369852426,
+    -0.019070880778187204
+  ],
+  "T_link7_camera_cv": [
+    0.711813518651796,
+    0.5781261312869429,
+    -0.3988629977670799,
+    0.06743847925312695,
+    -0.7023269884630633,
+    0.5796914869026035,
+    -0.4131520074852023,
+    0.08114259438940188,
+    -0.007636487474825648,
+    0.5742194322171978,
+    0.8186658217631939,
+    0.13960659521074797,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+  ],
+  "joint_origins": [
+    {
+      "name": "panda_joint1",
+      "xyz": [
+        0.0,
+        0.0,
+        0.333
+      ],
+      "rpy": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "panda_joint2",
+      "xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rpy": [
+        -1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "panda_joint3",
+      "xyz": [
+        0.0,
+        -0.316,
+        0.0
+      ],
+      "rpy": [
+        1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "panda_joint4",
+      "xyz": [
+        0.0825,
+        0.0,
+        0.0
+      ],
+      "rpy": [
+        1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "panda_joint5",
+      "xyz": [
+        -0.0825,
+        0.384,
+        0.0
+      ],
+      "rpy": [
+        -1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "panda_joint6",
+      "xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rpy": [
+        1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "panda_joint7",
+      "xyz": [
+        0.088,
+        0.0,
+        0.0
+      ],
+      "rpy": [
+        1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  ],
+  "link7_to_flange_z_m": 0.107,
+  "gripper": {
+    "model": "Robotiq 2F-85",
+    "joint_name": "finger_joint",
+    "open_joint_position_rad": 0.0,
+    "state": "always_open",
+    "provenance": "User instruction on 2026-10-10; not measured"
+  },
+  "provenance": {
+    "PWM_Data": {
+      "url": "https://github.com/XsjFyZs7/PWM_Data",
+      "commit": "f44e95c23d569b668de7a0918ee558556a72364d"
+    },
+    "FrankaNav": {
+      "url": "https://github.com/XsjFyZs7/FrankaNav",
+      "commit": "683a07e0d8a548e4aeabdb2d9cfddde1f21794db"
+    },
+    "files": {
+      "front_camera_info.yaml": "95fab3842d199c7c4c58287c8b26a3f9a9590ba4925ccd2b27d967214fc14bdb",
+      "T_ee_front.yaml": "d8bbc6c2694d97f380ced257f8e6ae10f117249627dc7027b8deaa0036b53e04",
+      "assets/franka_description/franka_panda_robotiq_2f85.urdf": "d757fb18b8b55c4209fbdd2d3861e69271ac86d3b54c32e3029f6f2a0ab07e3f"
+    },
+    "extrinsic_parent": "panda_link7",
+    "recorded_ee": "O_T_EE; do not multiply by link7 camera extrinsic",
+    "depth_unit": "metres; confirmed by FrankaNav realsense.py",
+    "depth_registration": "RealSense aligns depth to color before publication"
+  }
+}

@@ -156,14 +156,36 @@ collisions. All 65 tests and all 200 rollout trace audits passed. All 343 encode
 parameter tensors started exactly at the official values and changed during
 training; every model parameter tensor changed.
 
-Two additional training seeds, 20261010 and 20261011, completed on GPUs 0–3
-and 4–7, respectively. Each used four GPUs with global batch 32, local batch
-eight, 30 epochs and otherwise identical model/data/training settings. The
-benchmark seed remains 20261001 and model source matches the initial fresh run.
-Seed 20261010 selected epoch 30 at 20.50 mm waypoint RMSE and scored 63/100
-validation, 70/100 test. Seed 20261011 selected epoch 29 at 20.99 mm and scored
-60/100 validation, 67/100 test. Both passed complete initialization, gradient,
-checkpoint and trajectory audits but miss the validation no-drop target. Prior
-checkpoint initialization and module warmup remained excluded.
+Two additional training seeds, 20261010 and 20261011, now run in parallel on
+GPUs 0–3 and 4–7, respectively. Each receives four GPUs with global batch 32,
+local batch eight, 30 epochs and otherwise identical model/data/training
+settings. The benchmark seed remains 20261001. Model source matches the initial
+fresh run. Each detached Docker pipeline includes full validation/test evaluation
+and initialization/gradient/checkpoint/trajectory audits. Prior checkpoint
+initialization and module warmup remain excluded.
 
 [Protocol, run directories and reproduction](attention_joint_fresh.md).
+
+## Expanded scene and adaptive robot surface nodes — 2026-10-10
+
+The two previous four-GPU seed repeats completed. Seed 20261010 selected epoch
+30 at 20.50 mm waypoint RMSE and scored 63/100 validation, 70/100 test. Seed
+20261011 selected epoch 29 at 20.99 mm and scored 60/100 validation, 67/100 test.
+Both passed the complete audits but miss the validation no-drop target.
+
+The next model samples 1,024 scene points per RGB observation, queries at most
+1,024 points from C1 and increases anchor capacity to 4,096. C2 learns 64 unique
+surface-node selections from a 2,048-point URDF collision-mesh pool covering the
+moving arm, hand, fingers and calibrated camera. Joint origins are not its node
+representation. Candidate IK/FK moves the full arm geometry; full-arm collision
+fields now provide training-only risk labels and measured-state self filtering.
+The node selector learns relevance and coverage, and the four attention blocks
+use the complete queried scene. All 73 tests pass in Docker.
+
+Seeds 20261010 and 20261011 run from official Pi3-only initialization, with all
+parameters trainable, on GPUs 0–3 and 4–7. Each uses 30 epochs, global batch 32
+and the same benchmark/data/optimizer setup as its previous seed run. Full
+validation/test and audits are automatic; results are pending. This changes
+physical representation and supervision as well as point counts.
+
+[Architecture, limits and reproduction](adaptive_surface_nodes.md).

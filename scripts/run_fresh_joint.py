@@ -125,6 +125,7 @@ def main():
             official_weights=provenance, previous_experiment_checkpoints_accessible=False,
             previous_experiment_checkpoint_used=False, module_warmup_used=False, all_parameters_trainable=True,
             encoder_frozen=False, geometry=config['model']['learned_geometry'], epochs=config['train']['epochs'],
+            scene_point_grid=config['model']['perception'].get('point_grid_hw', [20, 20]),
             draws_per_epoch=config['train']['draws_per_epoch'], global_batch_size=config['train']['batch_size'],
             local_batch_size=config['train']['batch_size']//workers, distributed_processes=workers,
             learning_rate=config['train']['learning_rate'], selection='minimum validation waypoint RMSE',
@@ -195,11 +196,23 @@ def main():
         assert digest(checkpoint) == audit['checkpoint_sha256']
         assert source_hashes(source) == read_json(root/'source_sha256.json')
         write_json(root/'summary.json', summary)
+        geometry = config['model']['learned_geometry']
+        representation = ('The robot is represented by '+str(geometry['robot_nodes'])+
+            ' adaptively selected collision-surface nodes per candidate pose, covering arm, hand, fingers and camera. '
+            'The surface selector uses measured state, goal and scene features; joint origins are not representation nodes. '
+            'FK/IK moves the complete surfaces at the candidate configurations. '
+            if geometry.get('robot_representation') == 'surface' else
+            'The robot uses six tool-region representatives and seven arm-joint context points per pose. ')
+        grid = config['model']['perception'].get('point_grid_hw', [20, 20])
+        representation += (f"Perception samples {grid[0]*grid[1]} scene points per observation; "
+            f"C1 passes at most {geometry.get('query_capacity', config['model']['memory']['capacity'])} selected points to clearance. ")
         text = f'''# Fresh joint learned-geometry training
 
 Official Pi3 encoder weights are the only pretrained initialization. All {audit['trainable_parameters']:,} parameters, including the encoder, were trainable. No previous experiment checkpoint, module warmup or cached model prediction was used. The existing recovery observations are independent train-only perturbations.
 
 The joint policy uses four attention blocks with residual connections and FFNs in each learned C1/C2 module. C1 performs hard learned point selection; C2 uses its neural risk and learned attention pooling. The full model trained for {len(epochs)} epochs, {config['train']['draws_per_epoch']:,} draws per epoch, global batch {config['train']['batch_size']}, learning rate {config['train']['learning_rate']:g}, on {workers} GPUs. Training seed: {config['train']['seed']}; benchmark split seed: {config['benchmark']['seed']}.
+
+{representation}
 
 Selected epoch: **{selected['epoch']}** by minimum validation waypoint RMSE (**{selected['validation_rmse_m']*1000:.2f} mm**). Test rollouts did not select the model.
 

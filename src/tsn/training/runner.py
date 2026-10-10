@@ -74,6 +74,11 @@ def validate_fresh_joint(config):
     if (geometry.get('mode') != 'replacement' or not geometry.get('c1') or not geometry.get('c2')
             or not all(model.get('contributions', {}).get(key, False) for key in ('c1', 'c2', 'c3'))):
         raise ValueError('Fresh joint training requires the complete learned C1/C2/C3 policy')
+    if geometry.get('robot_representation') == 'surface':
+        if options['loss_weights'].get('nodes', 0) <= 0 or options['loss_weights'].get('embodiment', 0) <= 0:
+            raise ValueError('Surface-node training needs positive selection and embodiment supervision')
+        if geometry.get('query_capacity', model['memory']['capacity']) > geometry.get('scene_attention_capacity', 1024):
+            raise ValueError('Surface attention must accommodate the complete queried scene')
 
 
 def parameter_hashes(model):
@@ -94,7 +99,8 @@ def encode_observations(model, maps, batch):
     joint, tokens, geometry, dense = current
     previous_tokens = tokens.new_zeros(count*past, 16, 768)
     previous_geometry = geometry.new_zeros(count*past, 16, 6)
-    previous_points = torch.zeros(count*past, 400, 3, device=tokens.device)
+    point_count = model.point_grid_hw[0]*model.point_grid_hw[1]
+    previous_points = torch.zeros(count*past, point_count, 3, device=tokens.device)
     valid = batch['history_mask'][:, :past].flatten()
     if valid.any():
         with torch.no_grad():
@@ -102,11 +108,11 @@ def encode_observations(model, maps, batch):
                 batch['history_rgb'][:, :past].flatten(0, 1)[valid], states[:, :past].flatten(0, 1)[valid],
                 batch['history_K'][:, :past].flatten(0, 1)[valid], batch['history_T_B_C'][:, :past].flatten(0, 1)[valid])
             previous_tokens[valid], previous_geometry[valid] = old_tokens, old_geometry
-            previous_points[valid] = metric_points(old_dense)
+            previous_points[valid] = metric_points(old_dense, model.point_grid_hw)
     return dict(joint=joint, dense=dense, state=states[:, -1],
         tokens=torch.cat((previous_tokens.reshape(count, past, 16, 768), tokens[:, None]), 1),
         geometry=torch.cat((previous_geometry.reshape(count, past, 16, 6), geometry[:, None]), 1),
-        points=torch.cat((previous_points.reshape(count, past, 400, 3), metric_points(dense)[:, None]), 1))
+        points=torch.cat((previous_points.reshape(count, past, point_count, 3), metric_points(dense, model.point_grid_hw)[:, None]), 1))
 
 
 def predict_route(model, maps, batch):
@@ -143,8 +149,8 @@ def training_loss(model, maps, batch, weights):
         radii = (model.clearance.predict_error(model.route.visual(features['tokens'][:, -1].float()).detach(),
                                               points, batch['T_B_C'], tcp)
                  if model.use_clearance else points.new_zeros(points.shape[:2]))
-        teacher_points = metric_points(teacher)
-        point_valid = F.interpolate(observed[:, None].float(), (20, 20), mode='nearest-exact').flatten(1).bool()
+        teacher_points = metric_points(teacher, model.point_grid_hw)
+        point_valid = F.interpolate(observed[:, None].float(), model.point_grid_hw, mode='nearest-exact').flatten(1).bool()
         point_valid &= workspace_mask(points) & ((points-tcp[:, None, :3, 3]).norm(dim=-1) > .07)
         errors = (points-teacher_points).norm(dim=-1)
         losses = dict(route=F.huber_loss(prediction, target, delta=.02),
@@ -177,9 +183,9 @@ def training_loss(model, maps, batch, weights):
                 losses['embodiment'] = prediction.sum()*0
             return sum(weights[name]*value for name, value in losses.items()), losses
         with torch.no_grad():
-            positions, rotations, _ = cartesian_proposal(prediction.detach(), features['joint'].detach(),
+            positions, rotations, joint_seeds = cartesian_proposal(prediction.detach(), features['joint'].detach(),
                 batch['qpos'][:, :7], tcp, goal_position(features['state']), model.kinematics)
-        trust_losses, body_losses = [], []
+        trust_losses, body_losses, node_losses = [], [], []
         for row in range(len(tcp)):
             memory = PersistentGeometry(model.memory.capacity, model.memory.merge_radius, model.memory.voxel_size)
             memory.selector = model.memory.selector
@@ -194,14 +200,14 @@ def training_loss(model, maps, batch, weights):
                     u = model.clearance.predict_error(model.route.visual(features['tokens'][row:row+1, slot].float()),
                         p[None], batch['history_T_B_C'][row:row+1, slot], past_tcp[None])[0]
                     mount = torch.linalg.inv(past_tcp)@batch['history_T_B_C'][row, slot]
-                    valid = workspace_mask(p) & ~model.embodiment.self_mask(p, past_tcp, fingers, mount)
+                    valid = workspace_mask(p) & ~model.self_surface_mask(p, past_tcp, fingers, mount, batch['history_qpos'][row, slot])
                     step = int(batch['frame_index'][row]-batch['history_ages'][row, slot])
                     memory.update(p, valid, u, step, past_tcp[:3, 3], goal_position(features['state'])[row],
                                   policy_state(batch['history_qpos'][row:row+1, slot],
                                                batch['history_goal_pose'][row:row+1, slot], maps.settings)[0])
             surfaces, error, point_weights = memory.query(return_weights=True)
-            context = dict(state=features['state'][row], goal=goal_position(features['state'])[row],
-                           arm_points=model.kinematics.arm_points(batch['qpos'][row, :7]))
+            context = model.geometry_context(batch['qpos'][row], features['state'][row],
+                                             goal_position(features['state'])[row], joint_seeds[row])
             candidates, costs = model.clearance.costs(positions[row], rotations[row], tcp[row],
                 goal_position(features['state'])[row], surfaces, error,
                 batch['qpos'][row, 7:9], model.embodiment, torch.linalg.inv(tcp[row])@batch['T_B_C'][row],
@@ -210,6 +216,11 @@ def training_loss(model, maps, batch, weights):
                 regret = (candidates[:, 4::5]-tcp[row, :3, 3]-target[row]).square().mean((-1, -2))
                 labels = (-regret/.015**2).softmax(-1)
             trust_losses.append(-(labels*(-costs/.03).log_softmax(-1)).sum())
+            if model.surface_robot:
+                surface_aux = model.embodiment.pop_training_aux()
+                body_losses.append(F.mse_loss(surface_aux['risk'], surface_aux['teacher'])+model.embodiment.calibration_loss())
+                node_losses.append(surface_aux['selection_loss'])
+                continue
             if 'embodiment' in weights and model.learned_c2:
                 # Training-only calibration target; deployment uses solely the
                 # network output. This stabilizes risk scale alongside ranking.
@@ -229,6 +240,8 @@ def training_loss(model, maps, batch, weights):
             if model.learned_c2:
                 # Keep a valid graph for fully filtered clouds, including DDP.
                 losses['embodiment'] += sum(p.sum()*0 for p in model.embodiment.parameters())
+        if 'nodes' in weights:
+            losses['nodes'] = torch.stack(node_losses).mean() if node_losses else prediction.sum()*0
     return sum(weights[name]*value for name, value in losses.items()), losses
 
 
@@ -364,6 +377,11 @@ def train(config, output):
         distributed_processes=world, global_batch_size=options['batch_size'],
         contributions=dict(c1=model.use_history, c2=model.use_embodiment, c3=model.use_clearance),
         history_slots=training.history.shape[1])
+    initialization.update(scene_points_per_observation=model.point_grid_hw[0]*model.point_grid_hw[1],
+        scene_query_capacity=model.memory.query_capacity, robot_representation='surface' if model.surface_robot else 'regions',
+        robot_nodes_per_pose=model.embodiment.node_count if model.surface_robot else
+                             13 if model.learned_c2 and model.memory.replacement else None,
+        robot_surface_pool=len(model.embodiment.surface.local_points) if model.surface_robot else None)
     if rank == 0:
         write_json(output/'initialization.json', initialization)
         if options.get('fresh_joint'):
@@ -385,6 +403,8 @@ def train(config, output):
                     groups = ('perception.encoder', 'perception.decoder', 'perception.joint_head',
                               'perception.point_head', 'route', 'clearance.error_head', 'clearance.trust_head',
                               'memory.selector', 'embodiment')
+                    if model.surface_robot:
+                        groups += ('embodiment.selection_head', 'embodiment.surface_embedding', 'embodiment.blocks')
                     gradients = {prefix: dict(
                         trainable_parameters=sum(p.numel() for name, p in model.named_parameters()
                                                  if name.startswith(prefix+'.') and p.requires_grad),

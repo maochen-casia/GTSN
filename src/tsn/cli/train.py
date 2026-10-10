@@ -22,7 +22,7 @@ def main():
     if options['num_workers'] < 0 or options['weight_decay'] < 0:
         parser.error('Worker count and weight decay must be nonnegative')
     required = {'route', 'joints', 'maps', 'geometry', 'uncertainty', 'trust'}
-    if not required <= options['loss_weights'].keys() or options['loss_weights'].keys()-required-{'memory', 'embodiment'}:
+    if not required <= options['loss_weights'].keys() or options['loss_weights'].keys()-required-{'memory', 'embodiment', 'nodes'}:
         parser.error('Provide every main-model loss weight')
     if any(value < 0 for value in options['loss_weights'].values()):parser.error('Loss weights must be nonnegative')
     if config['eval']['execute_horizon'] != 15:parser.error('The main policy executes 15 steps')

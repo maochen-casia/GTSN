@@ -5,18 +5,20 @@ import torch
 from torch import nn
 
 
-def uncertainty_features(visual, points, pose, tcp):
-    """(B,16,64) visual cells and (B,400,3) points -> (B,400,74)."""
-    if points.shape[1:] != (400, 3) or visual.shape[1:] != (16, 64):
-        raise ValueError('Expected a 20x20 point grid and 4x4 visual cells')
+def uncertainty_features(visual, points, pose, tcp, grid_hw=(20, 20)):
+    """Match 4x4 visual cells to a configurable regular scene-point grid."""
+    height, width = grid_hw
+    count = height*width
+    if points.shape[1:] != (count, 3) or visual.shape[1:] != (16, 64) or height % 4 or width % 4:
+        raise ValueError('Point grid must match its dimensions and the 4x4 visual cells')
     p = torch.nan_to_num(points.float(), nan=0., posinf=0., neginf=0.)
-    grid = p.reshape(-1, 20, 20, 3)
+    grid = p.reshape(-1, height, width, 3)
     row = (grid[:, 1:]-grid[:, :-1]).norm(dim=-1)
     col = (grid[:, :, 1:]-grid[:, :, :-1]).norm(dim=-1)
     row, col = torch.cat((row, row[:, -1:]), 1), torch.cat((col, col[:, :, -1:]), 2)
     curvature = (grid-.5*torch.roll(grid, 1, 1)-.5*torch.roll(grid, -1, 1)).norm(dim=-1)
-    roughness = torch.stack((row, col, curvature), -1).reshape(-1, 400, 3)/.1
-    appearance = visual.float().reshape(-1, 4, 4, 64).repeat_interleave(5, 1).repeat_interleave(5, 2).reshape(-1, 400, 64)
+    roughness = torch.stack((row, col, curvature), -1).reshape(-1, count, 3)/.1
+    appearance = visual.float().reshape(-1, 4, 4, 64).repeat_interleave(height//4, 1).repeat_interleave(width//4, 2).reshape(-1, count, 64)
     normalized = (p-p.new_tensor([.65, 0, .22]))/p.new_tensor([.55, .55, .5])
     camera = torch.einsum('bni,bij->bnj', p-pose[:, None, :3, 3], pose[:, :3, :3])/.5
     distance = (p-tcp[:, None, :3, 3]).norm(dim=-1, keepdim=True)/.5
@@ -45,11 +47,12 @@ class UncertaintyClearance(nn.Module):
     Predictions are uncertainty signals, not certified error bounds. Geometry
     scoring is delegated to C2; episode memory belongs to C1.
     """
-    def __init__(self, max_padding=.03, margin=.04):
+    def __init__(self, max_padding=.03, margin=.04, point_grid_hw=(20, 20)):
         super().__init__()
         if not 0 <= max_padding <= .05 or not math.isfinite(margin) or margin <= 0:
             raise ValueError('Invalid clearance distances')
         self.max_padding, self.margin = max_padding, margin
+        self.point_grid_hw = tuple(point_grid_hw)
         self.error_head = nn.Sequential(nn.Linear(74, 64), nn.SiLU(), nn.Linear(64, 1))
         self.trust_head = nn.Sequential(nn.Linear(8, 32), nn.SiLU(), nn.Linear(32, 1))
         nn.init.zeros_(self.error_head[-1].weight)
@@ -58,7 +61,7 @@ class UncertaintyClearance(nn.Module):
         nn.init.constant_(self.trust_head[-1].bias, math.log(1.5))
 
     def predict_error(self, visual, points, pose, tcp):
-        return .005+.195*self.error_head(uncertainty_features(visual, points, pose, tcp)).sigmoid().squeeze(-1)
+        return .005+.195*self.error_head(uncertainty_features(visual, points, pose, tcp, self.point_grid_hw)).sigmoid().squeeze(-1)
 
     def padding(self, radius):
         return self.max_padding*((radius-.015)/.085).clamp(0, 1)

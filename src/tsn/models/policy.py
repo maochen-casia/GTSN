@@ -14,11 +14,12 @@ from tsn.models.c3_clearance import UncertaintyClearance
 from tsn.models.kinematics import PandaKinematics
 from tsn.models.perception import RGBPerception
 from tsn.models.route import RouteHead, cartesian_proposal, goal_position
+from tsn.models.surface_embodiment import SurfaceEmbodimentGeometry
 
 
-def metric_points(dense):
-    """Decode predicted normalized XYZ into a 20x20 base-frame point grid."""
-    points = F.interpolate(dense[:, :3].float(), (20, 20), mode='nearest-exact').flatten(2).transpose(1, 2)
+def metric_points(dense, grid_hw=(20, 20)):
+    """Decode predicted normalized XYZ on the configured base-frame point grid."""
+    points = F.interpolate(dense[:, :3].float(), grid_hw, mode='nearest-exact').flatten(2).transpose(1, 2)
     return points*points.new_tensor([.55, .55, .5])+points.new_tensor([.65, 0, .22])
 
 
@@ -43,17 +44,27 @@ class NavigationPolicy(nn.Module):
         learned = config.get('learned_geometry', {})
         self.learned_c1 = learned.get('c1', False) and self.use_history
         self.learned_c2 = learned.get('c2', False) and self.use_embodiment
+        self.point_grid_hw = tuple(config['perception'].get('point_grid_hw', (20, 20)))
+        if len(self.point_grid_hw) != 2 or any(v <= 0 or v % 4 for v in self.point_grid_hw):
+            raise ValueError('Point-grid dimensions must be positive multiples of four')
         replacement = learned.get('mode', 'adapter') == 'replacement'
         if learned.get('mode', 'adapter') not in ('adapter', 'replacement'):
             raise ValueError('Unknown learned geometry mode')
         if replacement and any(key in learned for key in ('c1_strength', 'c2_strength')):
             raise ValueError('Replacement modules do not accept residual strengths')
-        self.embodiment = (AttentionEmbodimentGeometry(self.robot, learned.get('width', 64), learned.get('depth', 2),
+        representation = learned.get('robot_representation', 'regions')
+        if representation not in ('regions', 'surface') or (representation == 'surface' and not (self.learned_c2 and replacement)):
+            raise ValueError('Surface nodes require learned replacement C2')
+        self.surface_robot = representation == 'surface'
+        self.embodiment = (SurfaceEmbodimentGeometry(self.robot, learned.get('width', 64), learned.get('depth', 4),
+                            learned.get('robot_nodes', 64), learned.get('surface_pool_size', 2048),
+                            learned.get('scene_attention_capacity', 1024)) if self.surface_robot else
+                          AttentionEmbodimentGeometry(self.robot, learned.get('width', 64), learned.get('depth', 2),
                                                       learned.get('calibrated_risk', False))
                           if self.learned_c2 and replacement else
                           LearnedEmbodimentGeometry(self.robot, learned.get('c2_strength', 1.)) if self.learned_c2
                           else EmbodimentGeometry(self.robot) if self.use_embodiment else TCPGeometry())
-        self.clearance = UncertaintyClearance(**config['clearance'])
+        self.clearance = UncertaintyClearance(**config['clearance'], point_grid_hw=self.point_grid_hw)
         if not self.use_clearance:
             self.clearance.requires_grad_(False)
         self.memory = PersistentGeometry(**config['memory'], learned=self.learned_c1,
@@ -84,6 +95,19 @@ class NavigationPolicy(nn.Module):
     def execution_horizon(self, default):
         return self.execute
 
+    def geometry_context(self, qpos, state=None, goal=None, joint_seeds=None):
+        context = dict(state=state, goal=goal)
+        if self.surface_robot:
+            context.update(qpos=qpos, joint_seeds=joint_seeds)
+        else:
+            context['arm_points'] = self.kinematics.arm_points(qpos[:7])
+        return context
+
+    def self_surface_mask(self, points, tcp, fingers, mount, qpos):
+        if self.surface_robot:
+            return self.embodiment.self_mask(points, tcp, fingers, mount, context=dict(qpos=qpos))
+        return self.embodiment.self_mask(points, tcp, fingers, mount)
+
     def forward(self, rgb, state, K, pose):
         """One live episode -> (1,30,7) joint offsets from measured q, radians."""
         if len(state) != 1:
@@ -93,11 +117,12 @@ class NavigationPolicy(nn.Module):
         with torch.autocast(device_type=q.device.type, enabled=False):
             tcp, goal = self.kinematics(q), goal_position(state)
             mount = torch.linalg.inv(tcp[0])@pose[0].float()
-            points = metric_points(dense)
+            points = metric_points(dense, self.point_grid_hw)
             fingers = state[0, 7:9].float()*.04
             radius = (self.clearance.predict_error(self.route.visual(tokens.float()), points, pose.float(), tcp)
                       if self.use_clearance else points.new_zeros(points.shape[:2]))
-            valid = workspace_mask(points[0]) & ~self.embodiment.self_mask(points[0], tcp[0], fingers, mount)
+            measured_q = torch.cat((q[0], fingers))
+            valid = workspace_mask(points[0]) & ~self.self_surface_mask(points[0], tcp[0], fingers, mount, measured_q)
             if not self.use_history:
                 self.memory.reset()
             self.memory.update(points[0], valid, radius[0], self.step, tcp[0, :3, 3], goal[0], state[0])
@@ -107,7 +132,7 @@ class NavigationPolicy(nn.Module):
             offsets, _ = self.route(*observed, ages, torch.ones_like(ages, dtype=torch.bool), state, tcp)
             positions, rotations, seeds = cartesian_proposal(offsets, joint, q, tcp, goal, self.kinematics)
             surfaces, errors, point_weights = self.memory.query(return_weights=True)
-            context = dict(state=state[0], goal=goal[0], arm_points=self.kinematics.arm_points(q[0]))
+            context = self.geometry_context(measured_q, state[0], goal[0], seeds[0])
             refined = (self.clearance.refine(positions[0], rotations[0], tcp[0], goal[0],
                                             surfaces, errors, fingers, self.embodiment, mount, point_weights, context)
                        if self.use_clearance else positions[0])
