@@ -88,3 +88,23 @@ class PandaKinematics(nn.Module):
             dq = dq * (.12 / dq.abs().amax(-1, keepdim=True).clamp_min(.12))
             q = (q + dq).maximum(self.limits[:, 0]+.01).minimum(self.limits[:, 1]-.01)
         return q
+
+    def arm_points(self, q):
+        """Seven moving joint-origin probes in the base frame, from measured q.
+
+        These describe arm posture for learned context, rather than collision
+        volumes. The fixed tool distance field still defines physical contact.
+        """
+        q = q.float()
+        transform = torch.eye(4, device=q.device).expand(*q.shape[:-1], 4, 4).clone()
+        points = []
+        for origin, index in zip(self.origins, self.indices):
+            transform = transform@origin
+            if index >= 0:
+                points.append(transform[..., :3, 3])
+                c, s = q[..., index].cos(), q[..., index].sin()
+                rotation = torch.eye(4, device=q.device).expand_as(transform).clone()
+                rotation[..., 0, 0], rotation[..., 1, 1] = c, c
+                rotation[..., 0, 1], rotation[..., 1, 0] = -s, s
+                transform = transform@rotation
+        return torch.stack(points, -2)

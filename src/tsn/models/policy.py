@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from tsn.common.checkpoint import load_checkpoint
 from tsn.features.maps import GeometryMaps
 from tsn.models.c1_memory import PersistentGeometry, workspace_mask
-from tsn.models.c2_embodiment import EmbodimentGeometry, TCPGeometry
+from tsn.models.c2_embodiment import EmbodimentGeometry, LearnedEmbodimentGeometry, AttentionEmbodimentGeometry, TCPGeometry
 from tsn.models.c3_clearance import UncertaintyClearance
 from tsn.models.kinematics import PandaKinematics
 from tsn.models.perception import RGBPerception
@@ -40,11 +40,28 @@ class NavigationPolicy(nn.Module):
         self.use_embodiment = contributions.get('c2', True)
         self.use_clearance = contributions.get('c3', True)
         self.kinematics = PandaKinematics(self.robot)
-        self.embodiment = EmbodimentGeometry(self.robot) if self.use_embodiment else TCPGeometry()
+        learned = config.get('learned_geometry', {})
+        self.learned_c1 = learned.get('c1', False) and self.use_history
+        self.learned_c2 = learned.get('c2', False) and self.use_embodiment
+        replacement = learned.get('mode', 'adapter') == 'replacement'
+        if learned.get('mode', 'adapter') not in ('adapter', 'replacement'):
+            raise ValueError('Unknown learned geometry mode')
+        if replacement and any(key in learned for key in ('c1_strength', 'c2_strength')):
+            raise ValueError('Replacement modules do not accept residual strengths')
+        self.embodiment = (AttentionEmbodimentGeometry(self.robot, learned.get('width', 64), learned.get('depth', 2),
+                                                      learned.get('calibrated_risk', False))
+                          if self.learned_c2 and replacement else
+                          LearnedEmbodimentGeometry(self.robot, learned.get('c2_strength', 1.)) if self.learned_c2
+                          else EmbodimentGeometry(self.robot) if self.use_embodiment else TCPGeometry())
         self.clearance = UncertaintyClearance(**config['clearance'])
         if not self.use_clearance:
             self.clearance.requires_grad_(False)
-        self.memory = PersistentGeometry(**config['memory'])
+        self.memory = PersistentGeometry(**config['memory'], learned=self.learned_c1,
+                                         strength=learned.get('c1_strength', 1.),
+                                         replacement=replacement and self.learned_c1,
+                                         hidden_dim=learned.get('width', 64) if replacement else 32,
+                                         depth=learned.get('depth', 2), query_source=learned.get('query_source', 'bank'),
+                                         query_capacity=learned.get('query_capacity'))
         self.freeze_encoder = config['perception']['freeze_encoder']
         if self.freeze_encoder:
             self.perception.encoder.requires_grad_(False)
@@ -83,15 +100,16 @@ class NavigationPolicy(nn.Module):
             valid = workspace_mask(points[0]) & ~self.embodiment.self_mask(points[0], tcp[0], fingers, mount)
             if not self.use_history:
                 self.memory.reset()
-            self.memory.update(points[0], valid, radius[0], self.step, tcp[0, :3, 3], goal[0])
+            self.memory.update(points[0], valid, radius[0], self.step, tcp[0, :3, 3], goal[0], state[0])
             self.history.append((tokens.detach(), geometry.detach(), pose.detach(), self.step))
             observed = [torch.stack([frame[i] for frame in self.history], 1) for i in range(3)]
             ages = q.new_tensor([[self.step-frame[3] for frame in self.history]])
             offsets, _ = self.route(*observed, ages, torch.ones_like(ages, dtype=torch.bool), state, tcp)
             positions, rotations, seeds = cartesian_proposal(offsets, joint, q, tcp, goal, self.kinematics)
-            surfaces, errors = self.memory.query()
+            surfaces, errors, point_weights = self.memory.query(return_weights=True)
+            context = dict(state=state[0], goal=goal[0], arm_points=self.kinematics.arm_points(q[0]))
             refined = (self.clearance.refine(positions[0], rotations[0], tcp[0], goal[0],
-                                            surfaces, errors, fingers, self.embodiment, mount)
+                                            surfaces, errors, fingers, self.embodiment, mount, point_weights, context)
                        if self.use_clearance else positions[0])
             targets = self.kinematics.inverse(seeds[0], refined, rotations[0])
         return (targets-q[0])[None]

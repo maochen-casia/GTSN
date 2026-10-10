@@ -1,6 +1,8 @@
 """Fresh main-model training on expert routes and independent perturbations."""
 import time
 import os
+import copy
+import hashlib
 from pathlib import Path
 
 import torch
@@ -9,7 +11,7 @@ from torch.utils.data import WeightedRandomSampler
 from torch import distributed as dist, nn
 from torch.nn.parallel import DistributedDataParallel
 
-from tsn.common.checkpoint import save_checkpoint
+from tsn.common.checkpoint import load_checkpoint, save_checkpoint
 from tsn.common.config import create_output, write_json
 from tsn.common.seed import require_device, seed_everything
 from tsn.data.loaders import make_loader
@@ -18,6 +20,7 @@ from tsn.data.splits import make_splits, episode_catalog
 from tsn.features.maps import GeometryMaps
 from tsn.features.state import policy_state
 from tsn.models.c1_memory import PersistentGeometry, workspace_mask
+from tsn.models.c2_embodiment import EmbodimentGeometry
 from tsn.models.policy import NavigationPolicy, metric_points
 from tsn.models.route import cartesian_proposal, goal_position
 from tsn.training.losses import geometry_nll, map_loss, point_quantile_loss
@@ -54,6 +57,29 @@ def combined_totals(total, rows, components, device):
         dist.all_reduce(values)
     values = values.tolist()
     return values[0], int(values[1]), dict(zip(components, values[2:]))
+
+
+def validate_fresh_joint(config):
+    """Make the official-Pi3-only training contract explicit and enforceable."""
+    options = config['train']
+    if not options.get('fresh_joint', False):
+        return
+    model = config['model']
+    forbidden = ('initialize_from', 'module_initialization', 'geometry_only')
+    if any(options.get(key) for key in forbidden):
+        raise ValueError('Fresh joint training cannot load experiment or warmup weights')
+    if model['perception']['freeze_encoder'] or not model['perception']['pretrained_weights']:
+        raise ValueError('Fresh joint training requires trainable official Pi3 weights')
+    geometry = model.get('learned_geometry', {})
+    if (geometry.get('mode') != 'replacement' or not geometry.get('c1') or not geometry.get('c2')
+            or not all(model.get('contributions', {}).get(key, False) for key in ('c1', 'c2', 'c3'))):
+        raise ValueError('Fresh joint training requires the complete learned C1/C2/C3 policy')
+
+
+def parameter_hashes(model):
+    """Record initialization without saving a second, usable model checkpoint."""
+    return {name: hashlib.sha256(parameter.detach().cpu().contiguous().numpy().tobytes()).hexdigest()
+            for name, parameter in model.named_parameters()}
 
 
 def encode_observations(model, maps, batch):
@@ -93,6 +119,17 @@ def predict_route(model, maps, batch):
     return features, tcp, prediction, target, auxiliary
 
 
+def retention_targets(points, reliable, future_positions):
+    """Depth correctness and proximity to the expert's future occupied path.
+
+    These are training labels, not a deployment priority formula. Reliable
+    background remains useful; surfaces near the future path receive more
+    supervision so state/goal conditioning has a task-dependent target.
+    """
+    distance = torch.cdist(points.float(), future_positions.float()).amin(-1)
+    return reliable.float()*(.25+.75*torch.exp(-.5*(distance/.12).square()))
+
+
 def training_loss(model, maps, batch, weights):
     features, tcp, prediction, target, auxiliary = predict_route(model, maps, batch)
     with torch.autocast(device_type=tcp.device.type, enabled=False):
@@ -115,15 +152,40 @@ def training_loss(model, maps, batch, weights):
             maps=map_loss(features['dense'], teacher, observed),
             geometry=geometry_nll(auxiliary, teacher_cells, cells_valid),
             uncertainty=point_quantile_loss(radii, errors, point_valid) if model.use_clearance else prediction.sum()*0)
+        if 'memory' in weights:
+            if model.learned_c1:
+                selector = model.memory.selector
+                point_losses = []
+                for row in range(len(tcp)):
+                    valid = point_valid[row]
+                    if valid.any():
+                        p, u = points[row, valid], radii[row, valid].detach()
+                        logits = selector(p, u, p.new_ones(len(p)), p.new_zeros(len(p)),
+                            p.new_zeros(len(p)), tcp[row, :3, 3], goal_position(features['state'])[row],
+                            features['state'][row])
+                        reliability = (errors[row, valid].detach() <= .04).float()
+                        if model.memory.replacement:
+                            reliability = retention_targets(p, reliability, tcp[row, :3, 3]+target[row])
+                        point_losses.append(F.binary_cross_entropy_with_logits(logits, reliability))
+                losses['memory'] = (torch.stack(point_losses).mean() if point_losses
+                                    else sum(p.sum()*0 for p in selector.parameters()))
+            else:
+                losses['memory'] = prediction.sum()*0
         if not model.use_clearance:
             losses['trust'] = prediction.sum()*0
+            if 'embodiment' in weights:
+                losses['embodiment'] = prediction.sum()*0
             return sum(weights[name]*value for name, value in losses.items()), losses
         with torch.no_grad():
             positions, rotations, _ = cartesian_proposal(prediction.detach(), features['joint'].detach(),
                 batch['qpos'][:, :7], tcp, goal_position(features['state']), model.kinematics)
-        trust_losses = []
+        trust_losses, body_losses = [], []
         for row in range(len(tcp)):
             memory = PersistentGeometry(model.memory.capacity, model.memory.merge_radius, model.memory.voxel_size)
+            memory.selector = model.memory.selector
+            memory.strength = model.memory.strength
+            memory.replacement = model.memory.replacement
+            memory.query_source, memory.query_capacity = model.memory.query_source, model.memory.query_capacity
             with torch.no_grad():
                 for slot in torch.where(batch['history_mask'][row])[0].tolist():
                     past_tcp = model.kinematics(batch['history_qpos'][row, slot, :7])
@@ -134,17 +196,79 @@ def training_loss(model, maps, batch, weights):
                     mount = torch.linalg.inv(past_tcp)@batch['history_T_B_C'][row, slot]
                     valid = workspace_mask(p) & ~model.embodiment.self_mask(p, past_tcp, fingers, mount)
                     step = int(batch['frame_index'][row]-batch['history_ages'][row, slot])
-                    memory.update(p, valid, u, step, past_tcp[:3, 3], goal_position(features['state'])[row])
-                surfaces, error = memory.query()
+                    memory.update(p, valid, u, step, past_tcp[:3, 3], goal_position(features['state'])[row],
+                                  policy_state(batch['history_qpos'][row:row+1, slot],
+                                               batch['history_goal_pose'][row:row+1, slot], maps.settings)[0])
+            surfaces, error, point_weights = memory.query(return_weights=True)
+            context = dict(state=features['state'][row], goal=goal_position(features['state'])[row],
+                           arm_points=model.kinematics.arm_points(batch['qpos'][row, :7]))
             candidates, costs = model.clearance.costs(positions[row], rotations[row], tcp[row],
                 goal_position(features['state'])[row], surfaces, error,
-                batch['qpos'][row, 7:9], model.embodiment, torch.linalg.inv(tcp[row])@batch['T_B_C'][row])
+                batch['qpos'][row, 7:9], model.embodiment, torch.linalg.inv(tcp[row])@batch['T_B_C'][row],
+                point_weights, context)
             with torch.no_grad():
                 regret = (candidates[:, 4::5]-tcp[row, :3, 3]-target[row]).square().mean((-1, -2))
                 labels = (-regret/.015**2).softmax(-1)
             trust_losses.append(-(labels*(-costs/.03).log_softmax(-1)).sum())
+            if 'embodiment' in weights and model.learned_c2:
+                # Training-only calibration target; deployment uses solely the
+                # network output. This stabilizes risk scale alongside ranking.
+                padding = model.clearance.padding(error).detach()
+                mount = torch.linalg.inv(tcp[row])@batch['T_B_C'][row]
+                with torch.no_grad():
+                    teacher_risk = EmbodimentGeometry.contact_risk(model.embodiment, candidates, rotations[row], tcp[row],
+                        surfaces, padding, batch['qpos'][row, 7:9], model.clearance.margin, mount)
+                neural_risk = model.embodiment.contact_risk(candidates, rotations[row], tcp[row], surfaces, padding,
+                    batch['qpos'][row, 7:9], model.clearance.margin, mount, context=context)
+                body_losses.append(F.mse_loss(neural_risk, teacher_risk))
+                if getattr(model.embodiment, 'calibrated', False):
+                    body_losses[-1] += model.embodiment.calibration_loss()
         losses['trust'] = torch.stack(trust_losses).mean()
+        if 'embodiment' in weights:
+            losses['embodiment'] = torch.stack(body_losses).mean() if body_losses else prediction.sum()*0
+            if model.learned_c2:
+                # Keep a valid graph for fully filtered clouds, including DDP.
+                losses['embodiment'] += sum(p.sum()*0 for p in model.embodiment.parameters())
     return sum(weights[name]*value for name, value in losses.items()), losses
+
+
+def initialize_geometry_update(model, checkpoint, config, splits):
+    """Load parent heads exactly; add new geometry tensors and freeze its encoder.
+
+    All other parameters retain their trainability unless the earlier adapter
+    experiment explicitly requests geometry_only.
+    """
+    saved = load_checkpoint(checkpoint)
+    if saved.get('architecture') != 'gtsn_main' or saved['splits'] != splits:
+        raise ValueError('Geometry updates require a main-policy checkpoint and identical splits')
+    previous, requested = copy.deepcopy(saved['config']['model']), copy.deepcopy(config['model'])
+    for settings in (previous, requested):
+        settings.pop('learned_geometry', None)
+        settings['perception'].pop('freeze_encoder', None)
+    if previous != requested or not config['model']['perception']['freeze_encoder']:
+        raise ValueError('Freeze the parent encoder and preserve the parent policy settings')
+    missing, unexpected = model.load_state_dict(saved['model'], strict=False)
+    allowed = ('memory.selector.', 'embodiment.point_embedding.', 'embodiment.scene_embedding.',
+               'embodiment.region_embedding.', 'embodiment.context_embedding.',
+               'embodiment.self_attention.', 'embodiment.scene_attention.', 'embodiment.risk_head.',
+               'embodiment.palm_probes', 'embodiment.wrist_probes', 'embodiment.body_embedding.',
+               'embodiment.scene_encoder.', 'embodiment.region_encoder.', 'embodiment.state_encoder.',
+               'embodiment.blocks.', 'embodiment.pool.', 'embodiment.readout', 'embodiment.priority_head.')
+    if unexpected or any(not name.startswith(allowed) for name in missing):
+        raise ValueError(f'Parent checkpoint mismatch: missing={missing}, unexpected={unexpected}')
+    if config['train'].get('geometry_only', False):
+        model.requires_grad_(False)
+        if model.memory.selector is not None:
+            model.memory.selector.requires_grad_(True)
+        if model.learned_c2:
+            for name, parameter in model.embodiment.named_parameters():
+                parameter.requires_grad_(True)
+    digest = hashlib.sha256()
+    with Path(checkpoint).open('rb') as stream:
+        for block in iter(lambda: stream.read(8*1024*1024), b''):
+            digest.update(block)
+    return dict(parent_checkpoint=str(checkpoint), parent_sha256=digest.hexdigest(),
+                geometry_only=config['train'].get('geometry_only', False), new_tensors=missing)
 
 
 @torch.inference_mode()
@@ -167,6 +291,10 @@ def validation_rmse(model, maps, loader, device):
 
 def train(config, output):
     options = config['train']
+    validate_fresh_joint(config)
+    if options.get('geometry_only', False):
+        raise ValueError('Use scripts/geometry_update.py for geometry-only training; '
+                         'unchanged route RMSE cannot select a geometry adapter')
     rank, world = int(os.environ.get('RANK', 0)), int(os.environ.get('WORLD_SIZE', 1))
     device = require_device(options['device'])
     if world > 1:
@@ -176,6 +304,8 @@ def train(config, output):
             torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
             device = torch.device('cuda', int(os.environ['LOCAL_RANK']))
         dist.init_process_group(backend='nccl' if device.type == 'cuda' else 'gloo')
+    if device.type == 'cuda' and options.get('gpu_memory_fraction'):
+        torch.cuda.set_per_process_memory_fraction(options['gpu_memory_fraction'], device=device)
     seed_everything(options['seed'])
     if rank == 0:
         create_output(output)
@@ -189,7 +319,9 @@ def train(config, output):
     validation = NavigationDataset(root, splits['validation'], catalog, options['validation_frame_stride'],
                                    observation_hw=options.get('observation_hw'),
                                    use_history=config['model'].get('contributions', {}).get('c1', True))
-    model = NavigationPolicy(config['model']).to(device)
+    parent = options.get('initialize_from')
+    model = NavigationPolicy(config['model'], initialize_encoder=not bool(parent)).to(device)
+    provenance = initialize_geometry_update(model, parent, config, splits) if parent else None
     maps = GeometryMaps(config['model']['maps']).to(device)
     generator = torch.Generator().manual_seed(options['seed'])
     sampler = ShardedWeightedSampler(sampling_weights(training.route, training.source),
@@ -202,22 +334,41 @@ def train(config, output):
     if world > 1:
         objective = DistributedDataParallel(objective, device_ids=[device.index] if device.type == 'cuda' else None)
         seed_everything(options['seed']+rank)
+    if options.get('module_initialization'):
+        if provenance is None:
+            raise ValueError('Module warmup initialization requires a parent checkpoint')
+        warm = torch.load(options['module_initialization'], map_location='cpu', weights_only=True)
+        new_names = set(provenance['new_tensors'])
+        if set(warm)-new_names:
+            raise ValueError('Module warmup may initialize only new tensors')
+        model.load_state_dict(warm, strict=False)
     parameters = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(parameters, lr=options['learning_rate'], weight_decay=options['weight_decay'])
+    if options.get('fresh_joint') and len(parameters) != len(list(model.parameters())):
+        raise ValueError('Every parameter must be trainable in fresh joint training')
+    new_names = set(provenance['new_tensors']) if provenance else set()
+    old_parameters = [p for name, p in model.named_parameters() if p.requires_grad and name not in new_names]
+    new_parameters = [p for name, p in model.named_parameters() if p.requires_grad and name in new_names]
+    optimizer = torch.optim.AdamW([{'params': old_parameters, 'lr': options['learning_rate']},
+        {'params': new_parameters, 'lr': options.get('module_learning_rate', options['learning_rate'])}],
+        weight_decay=options['weight_decay'])
     if rank == 0:
         write_json(output/'config.json', config); write_json(output/'splits.json', splits)
-    initialization = dict(navigation_initialized_from_scratch=True,
+    initialization = dict(navigation_initialized_from_scratch=not bool(parent), geometry_update=provenance,
         pretrained_weights=config['model']['perception']['pretrained_weights'],
         pretrained_scope='perception.encoder', encoder_frozen=config['model']['perception']['freeze_encoder'],
         parameters=sum(p.numel() for p in model.parameters()),
         trainable_parameters=sum(p.numel() for p in parameters),
+        frozen_parameter_names=[name for name, p in model.named_parameters() if not p.requires_grad],
         training_frames=len(training), validation_frames=len(validation),
         draws_per_epoch=options['draws_per_epoch'], test_used_for_selection=False,
         distributed_processes=world, global_batch_size=options['batch_size'],
         contributions=dict(c1=model.use_history, c2=model.use_embodiment, c3=model.use_clearance),
         history_slots=training.history.shape[1])
     if rank == 0:
-        write_json(output/'initialization.json', initialization); print(initialization, flush=True)
+        write_json(output/'initialization.json', initialization)
+        if options.get('fresh_joint'):
+            write_json(output/'initial_parameter_sha256.json', parameter_hashes(model))
+        print({k: v for k, v in initialization.items() if k != 'frozen_parameter_names'}, flush=True)
     best, records = float('inf'), []
     try:
         for epoch in range(1, options['epochs']+1):
@@ -230,6 +381,18 @@ def train(config, output):
                     loss, losses = objective(batch)
                 if not torch.isfinite(loss):raise RuntimeError('Nonfinite training loss')
                 loss.backward()
+                if batch_index == 1 and rank == 0:
+                    groups = ('perception.encoder', 'perception.decoder', 'perception.joint_head',
+                              'perception.point_head', 'route', 'clearance.error_head', 'clearance.trust_head',
+                              'memory.selector', 'embodiment')
+                    gradients = {prefix: dict(
+                        trainable_parameters=sum(p.numel() for name, p in model.named_parameters()
+                                                 if name.startswith(prefix+'.') and p.requires_grad),
+                        gradient_l1=sum(float(p.grad.detach().abs().sum()) for name, p in model.named_parameters()
+                                        if name.startswith(prefix+'.') and p.grad is not None)) for prefix in groups}
+                    write_json(output/f'gradient_audits/epoch_{epoch:03d}.json', gradients)
+                    if epoch == 1:
+                        write_json(output/'gradient_audit.json', gradients)
                 norm = torch.nn.utils.clip_grad_norm_(parameters, options['gradient_clip_norm'])
                 if not torch.isfinite(norm):raise RuntimeError('Nonfinite gradients')
                 optimizer.step()
@@ -260,7 +423,7 @@ def train(config, output):
                 dist.barrier()
         if rank == 0:
             write_json(output/'complete.json', dict(epochs=options['epochs'], best_validation_rmse_m=best,
-                navigation_initialized_from_scratch=True, test_used_for_selection=False))
+                navigation_initialized_from_scratch=not bool(parent), test_used_for_selection=False))
     finally:
         training.close(); validation.close()
         if world > 1:

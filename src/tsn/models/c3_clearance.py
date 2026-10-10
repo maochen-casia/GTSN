@@ -63,15 +63,18 @@ class UncertaintyClearance(nn.Module):
     def padding(self, radius):
         return self.max_padding*((radius-.015)/.085).clamp(0, 1)
 
-    def costs(self, waypoints, rotation, tcp, goal, points, radius, fingers, embodiment, camera_extrinsic=None):
+    def costs(self, waypoints, rotation, tcp, goal, points, radius, fingers, embodiment, camera_extrinsic=None,
+              point_weights=None, context=None):
         """Single-scene candidates (14,30,3) and costs (14,), shared by train/eval."""
         candidates, offsets = route_candidates(waypoints[None], tcp[None], goal[None])
         risk = embodiment.contact_risk(candidates[0], rotation, tcp, points,
-                                      self.padding(radius), fingers, self.margin, camera_extrinsic)
+                                      self.padding(radius), fingers, self.margin, camera_extrinsic, point_weights, context)
         features = torch.cat(((goal-tcp[:3, 3])/.3, waypoints[14]-tcp[:3, 3], risk[:1], risk.amin()[None]))
         trust = .02+.10*self.trust_head(features).sigmoid().squeeze(-1)
         return candidates[0], risk+trust*(offsets[0].norm(dim=-1)/.05).square()
 
-    def refine(self, waypoints, rotation, tcp, goal, points, radius, fingers, embodiment, camera_extrinsic=None):
-        candidates, costs = self.costs(waypoints, rotation, tcp, goal, points, radius, fingers, embodiment, camera_extrinsic)
+    def refine(self, waypoints, rotation, tcp, goal, points, radius, fingers, embodiment, camera_extrinsic=None,
+               point_weights=None, context=None):
+        candidates, costs = self.costs(waypoints, rotation, tcp, goal, points, radius, fingers, embodiment,
+                                       camera_extrinsic, point_weights, context)
         return candidates[costs.argmin()]

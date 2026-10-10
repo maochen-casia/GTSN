@@ -1,5 +1,31 @@
 # GTSN: geometry-grounded table scene navigation
 
+The fresh full joint run is documented in
+[attention_joint_fresh.md](documents/attention_joint_fresh.md). It trains the
+Pi3 encoder and every existing/new head together, initializing only the encoder
+from official Pi3 weights. The dedicated preset and Docker pipeline exclude
+previous experiment checkpoints and module warmups.
+The initial 30-epoch run scores 67/100 validation and 65/100 test. Two additional
+seeds scored 63/100 and 60/100 validation, and 70/100 and 67/100 test.
+
+The attention replacement revision is documented in
+[attention_replacement.md](documents/attention_replacement.md). It replaces C1
+priority rules with learned hard retention and C2 risk aggregation with stacked
+attention, residual connections and FFNs. Its parallel trials freeze only the
+Pi3 encoder while fine tuning all existing heads. Checkpoint configuration
+selects this mode with `model.learned_geometry.mode = "replacement"`.
+The selected four-block joint model scores 68/100 validation and 70/100 test,
+versus the original fixed-geometry policy's 68/100 and 69/100. All 62 tests pass
+in Docker; the method document links the checkpoint and complete audit.
+
+The earlier soft-adapter C1/C2 study is documented in
+[learned_geometry.md](documents/learned_geometry.md). It adds task-conditioned
+attention for persistent point retention and a moving robot-point encoder for
+regional clearance. The independent adapter study freezes the previously trained
+Pi3 and all existing navigation tensors, then selects strengths using full
+closed-loop validation before testing. Existing configurations and checkpoints
+remain supported; learned modules are enabled by their checkpoint configuration.
+
 The published-policy baseline suite is documented in
 [baselines_20261009.md](documents/baselines_20261009.md). It trains TSN adaptations
 of CARP (ICCV 2025), FlowPolicy (AAAI 2025), DP3 and Diffusion Policy in Docker,
@@ -156,7 +182,7 @@ python3 scripts/docker_run.py --cpu test
 The launcher mounts source, data and existing experiments read-only. Only the
 requested new output directory is writable. It runs without networking and
 requires no host package installation. The default image is
-`gtsn-persistent:20261005-compact-only`; its historical tag does not select a
+`gtsn-experiment:20261009-clean`; its tag does not select a
 policy. [Dockerfile](Dockerfile) builds a new project image when needed.
 
 ## Historical research record
